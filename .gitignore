@@ -2,4 +2,5 @@
 node_modules/
 services/.openalex_keys
 services/.openalex_keystate.json
+services/.llm_key.json
 services/.worker_running
