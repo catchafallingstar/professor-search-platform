@@ -14,7 +14,7 @@ sv import from ..services.queue {
     set_worker, reset_institution, get_config_status, add_openalex_key,
     InstitutionStatus, StepResult, WorkerState, ConfigStatus
 }
-import from .ui.input { Input }
+import from .OpenAlexKeys { OpenAlexKeys }
 
 def:pub StatTile(label: str, value: int, icon: any) -> JsxElement {
     return <Card className="shadow-sm">
@@ -46,21 +46,7 @@ def:pub PipelineAdmin() -> JsxElement {
         config: ConfigStatus | None = None,
         loading: bool = True,
         busy: bool = False,
-        error: str = "",
-        new_key: str = "",
-        key_msg: str = "";
-
-    async def add_key() -> None {
-        if not new_key.strip() { return; }
-        busy = True;
-        try {
-            res: StepResult = await add_openalex_key(new_key.strip());
-            key_msg = res.message;
-            if res.ok { new_key = ""; }
-            config = await get_config_status();
-        } except Exception as e { key_msg = str(e); }
-        busy = False;
-    }
+        error: str = "";
 
     async def refresh() -> None {
         try {
@@ -159,21 +145,10 @@ def:pub PipelineAdmin() -> JsxElement {
                     <ConfigRow label="OpenAlex API" ok={config.openalex_ok if config else False} detail="Tested live. No key required." />
                     <ConfigRow label="OPENALEX_MAILTO (optional)" ok={config.openalex_mailto if config else False} detail="Your email, for OpenAlex's faster polite pool." />
                     <ConfigRow
-                        label="OPENALEX_API_KEYS (recommended)"
+                        label="OpenAlex keys"
                         ok={config.openalex_key if config else False}
-                        detail={(
-                            (str(config.keys_available) + " of " + str(config.keys_total + 1) + " credentials available (keys + no-key pool)" + ("; " + str(config.keys_invalid) + " invalid" if config.keys_invalid > 0 else "") + ". ")
-                            if config else ""
-                        ) + "Comma-separated keys. Rotates to the next key when one hits its daily limit."}
+                        detail={(str(config.keys_available) + " of " + str(config.keys_total + 1) + " credentials usable (keys + no-key pool). Manage them below.") if config else "Manage them below."}
                     />
-                    <div className="flex flex-col gap-2 border-b pt-2.5 pb-3">
-                        <span className="text-xs font-medium">{"Add another OpenAlex key (takes effect immediately)"}</span>
-                        <div className="flex gap-2">
-                            <Input value={new_key} placeholder="Paste an OpenAlex API key" className="h-8 text-xs" onChange={lambda (e: ChangeEvent) { new_key = e.target.value; }} />
-                            <Button size="sm" variant="outline" onClick={add_key} disabled={busy or not new_key.strip()}>{"Add key"}</Button>
-                        </div>
-                        {key_msg and <span className="text-xs text-muted-foreground">{key_msg}</span>}
-                    </div>
                     <ConfigRow label="OPENAI_API_KEY (required)" ok={llm_ok} detail="Reads faculty pages and finds hiring statements." />
                     {not llm_ok and <div className="mt-3 flex items-start gap-2 rounded-lg bg-muted pt-2.5 pb-2.5 pl-3 pr-3 text-xs">
                         <HugeiconsIcon icon={Alert01Icon} strokeWidth={2} className="mt-0.5 size-3.5 shrink-0" />
@@ -193,6 +168,8 @@ def:pub PipelineAdmin() -> JsxElement {
                 </CardContent>
             </Card>
         </div>
+
+        <OpenAlexKeys />
 
         <Card className="shadow-sm">
             <CardHeader>

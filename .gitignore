@@ -1,4 +1,5 @@
 .jac/
 node_modules/
 services/.openalex_keys
+services/.openalex_keystate.json
 services/.worker_running

@@ -408,6 +408,43 @@ def:pub retry_unreadable() -> StepResult {
     return StepResult(message=msg);
 }
 
+obj KeyStatus {
+    has id: str = "",
+        source: str = "",
+        state: str = "",
+        remaining: int = -1,
+        limit: int = -1,
+        cooldown_minutes: int = 0,
+        uses: int = 0,
+        last_error: str = "",
+        order: int = 0;
+}
+
+def:pub list_openalex_keys() -> list[KeyStatus] {
+    # Masked (...last4) status of every credential in rotation order; full keys never leave the server.
+    return [
+        KeyStatus(
+            id=str(r["id"]), source=str(r["source"]), state=str(r["state"]),
+            remaining=int(r["remaining"]), limit=int(r["limit"]),
+            cooldown_minutes=int(r["cooldown_minutes"]), uses=int(r["uses"]),
+            last_error=str(r["last_error"]), order=int(r["order"])
+        )
+        for r in (fx.key_rows() as list[dict])
+    ];
+}
+
+def:pub remove_openalex_key(key_id: str) -> StepResult {
+    r = fx.remove_key(key_id) as dict;
+    _log(str(r["message"]));
+    return StepResult(ok=bool(r["ok"]), message=str(r["message"]));
+}
+
+def:pub reset_openalex_key(key_id: str) -> StepResult {
+    r = fx.reset_key(key_id) as dict;
+    _log(str(r["message"]));
+    return StepResult(ok=bool(r["ok"]), message=str(r["message"]));
+}
+
 def:pub add_openalex_key(key: str) -> StepResult {
     # Adds a key to the rotating pool immediately (no restart), verified with one live call.
     r = fx.add_key(key) as dict;

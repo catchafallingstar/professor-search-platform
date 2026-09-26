@@ -111,86 +111,17 @@ def llm_configured():
                 or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
 
 
-class RateLimited(Exception):
-    """Every OpenAlex credential is exhausted. The worker pauses instead of recording false 'unresolved' results."""
+# ---------------- OpenAlex credential pool (see services/keypool.py) ----------------
+try:
+    from services import keypool as kp
+except ImportError:  # imported as a plain module
+    import keypool as kp
 
-
-# ---------------- OpenAlex credential pool ----------------
-# Keys come from Settings > Environment:
-#   OPENALEX_API_KEYS = "key1,key2,key3"   (comma/space/newline separated)
-#   OPENALEX_API_KEY, OPENALEX_API_KEY_1 .. OPENALEX_API_KEY_20   (also accepted)
-# The keyless anonymous pool is always the last fallback. When one credential hits its
-# daily limit it cools down for the Retry-After period and the next one is used.
-
-_ANON = ""
-_COOLDOWN = {}      # credential -> unix time it becomes usable again
-_BAD_KEYS = set()   # keys OpenAlex rejected as invalid
-
-
-_KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".openalex_keys")
-
-
-def _file_keys():
-    try:
-        with open(_KEY_FILE) as fh:
-            return [ln.strip() for ln in fh if ln.strip()]
-    except OSError:
-        return []
-
-
-def add_key(key):
-    """Add an OpenAlex key at runtime (no restart). Validates it with one live call first."""
-    key = (key or "").strip()
-    if not key or re.search(r"\s", key):
-        return {"ok": False, "message": "Enter a single OpenAlex API key."}
-    if key in _configured_keys():
-        _COOLDOWN.pop(key, None)
-        return {"ok": True, "message": "Key already in the pool."}
-    try:
-        req = urllib.request.Request(OPENALEX + "/institutions?per-page=1&api_key=" + urllib.parse.quote(key),
-                                     headers={"User-Agent": UA})
-        urllib.request.urlopen(req, timeout=20).read()
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            return {"ok": False, "message": "OpenAlex rejected this key."}
-        if e.code == 429:
-            return {"ok": False, "message": "This key is also rate-limited right now."}
-        return {"ok": False, "message": f"Could not verify key (HTTP {e.code})."}
-    except Exception as e:
-        return {"ok": False, "message": f"Could not verify key: {e}"}
-    with open(_KEY_FILE, "a") as fh:
-        fh.write(key + "\n")
-    _BAD_KEYS.discard(key)
-    return {"ok": True, "message": f"Key ...{key[-4:]} added. Processing continues with it now."}
-
-
-def _configured_keys():
-    keys = list(_file_keys())
-    raw = os.environ.get("OPENALEX_API_KEYS", "")
-    keys += [k for k in re.split(r"[\s,;]+", raw) if k]
-    for name in ["OPENALEX_API_KEY"] + [f"OPENALEX_API_KEY_{i}" for i in range(1, 21)]:
-        v = os.environ.get(name, "").strip()
-        if v:
-            keys.append(v)
-    seen, out = set(), []
-    for k in keys:
-        if k not in seen:
-            seen.add(k)
-            out.append(k)
-    return out
-
-
-def _credentials():
-    return [k for k in _configured_keys() if k not in _BAD_KEYS] + [_ANON]
-
-
-def _available():
-    now = time.time()
-    return [c for c in _credentials() if _COOLDOWN.get(c, 0) <= now]
-
-
-def _mask(c):
-    return "no-key pool" if c == _ANON else f"key ...{c[-4:]}"
+RateLimited = kp.RateLimited
+add_key = kp.add_key
+remove_key = kp.remove_key
+reset_key = kp.reset_key
+key_rows = kp.key_rows
 
 
 _NOTICE = {"shown": False}
@@ -209,83 +140,65 @@ def clear_rate_notice():
 
 
 def rate_limit_status():
-    creds = _credentials()
-    avail = _available()
-    if avail:
-        return {"limited": False, "seconds_left": 0, "message": "",
-                "keys_total": len(creds) - 1, "keys_available": len(avail)}
-    left = int(min(_COOLDOWN.get(c, 0) for c in creds) - time.time())
-    n = len(creds) - 1
-    msg = (f"All OpenAlex credentials are rate-limited ({n} API key{'s' if n != 1 else ''} + no-key pool); "
-           f"the next one frees up in about {max(left, 0) // 60} min. "
-           "Add more keys to OPENALEX_API_KEYS (comma-separated) in Settings > Environment.")
-    return {"limited": True, "seconds_left": max(left, 0), "message": msg,
-            "keys_total": n, "keys_available": 0}
+    return kp.status()
 
 
 def config_status():
-    try:
-        ok = _get_json("/institutions", {"per-page": "1"}) is not None
-    except RateLimited:
-        ok = False
-    rl = rate_limit_status()
+    rl = kp.status()
     return {
-        "openalex_ok": ok,
+        "openalex_ok": not rl["limited"],
         "openalex_mailto": bool(os.environ.get("OPENALEX_MAILTO")),
-        "openalex_key": len(_configured_keys()) > 0,
-        "openalex_keys_total": len(_configured_keys()),
+        "openalex_key": len(kp.configured_keys()) > 0,
+        "openalex_keys_total": len(kp.configured_keys()),
         "openalex_keys_available": rl["keys_available"],
-        "openalex_keys_invalid": len(_BAD_KEYS),
+        "openalex_keys_invalid": kp.invalid_count(),
         "llm_key": llm_configured(),
     }
 
 
 def _get_json(path, params=None):
+    """One OpenAlex GET. Picks the best credential, rotates on 429/401/403, raises RateLimited when all rest."""
     mail = os.environ.get("OPENALEX_MAILTO", "")
-    tried = 0
-    while True:
-        avail = _available()
-        if not avail:
-            raise RateLimited(rate_limit_status()["message"])
-        cred = avail[0]  # keys first, anonymous pool last
+    for _hop in range(len(kp.configured_keys()) + 2):
+        cred = kp.pick()  # raises RateLimited when every credential is resting
         q = dict(params or {})
         if mail:
             q["mailto"] = mail
         if cred:
             q["api_key"] = cred
         url = OPENALEX + path + ("?" + urllib.parse.urlencode(q) if q else "")
-        switch = False
+        rotate = False
         for attempt in range(3):
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": UA})
                 with urllib.request.urlopen(req, timeout=20) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
+                    body = json.loads(resp.read().decode("utf-8"))
+                    kp.record_success(cred, resp.headers)
+                    return body
             except urllib.error.HTTPError as e:
                 if e.code == 404:
+                    kp.record_success(cred, e.headers)
                     return None
                 if e.code in (401, 403) and cred:
-                    print(f"[openalex] {_mask(cred)} rejected (HTTP {e.code}); dropping it")
-                    _BAD_KEYS.add(cred)
-                    switch = True
+                    kp.record_invalid(cred, e.code)
+                    rotate = True
                     break
                 if e.code == 429:
                     wait = int(e.headers.get("Retry-After", "0") or 0)
-                    if wait > 60:  # this credential's daily budget is gone -> rotate
-                        _COOLDOWN[cred] = time.time() + wait
-                        switch = True
+                    if wait > 60:  # daily budget gone for this credential -> rotate now
+                        kp.record_rate_limited(cred, wait)
+                        rotate = True
                         break
-                    time.sleep(max(wait, 2 * (attempt + 1)))
+                    time.sleep(max(wait, 2 * (attempt + 1)))  # short burst limit: brief backoff
                     continue
                 print(f"[openalex] {path} -> HTTP {e.code}")
                 return None
             except Exception as e:  # network errors
                 print(f"[openalex] {path} failed: {e}")
                 time.sleep(1)
-        if not switch:
+        if not rotate:
             return None
-        tried += 1
-        if tried > len(_credentials()) + 1:
-            raise RateLimited(rate_limit_status()["message"])
+    raise RateLimited(kp.status()["message"])
 
 
 def short_id(full):

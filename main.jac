@@ -2,6 +2,7 @@ import from services.pipeline { run_pipeline_for_professor, PipelineResult }
 import from services.queue {
     load_priority_universities, get_pipeline_status, process_next_step, get_worker_state,
     set_worker, reset_institution, get_config_status, add_openalex_key, retry_unreadable, recount_all,
+    list_openalex_keys, remove_openalex_key, reset_openalex_key, KeyStatus,
     InstitutionStatus, StepResult, WorkerState, ConfigStatus
 }
 import from services.directory {
