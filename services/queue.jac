@@ -1,0 +1,350 @@
+"""Priority queue + auto-worker.
+
+Order: Michigan -> surrounding states -> top 30 national -> (once all are DONE,
+incl. hiring) more US universities pulled from OpenAlex. f"process_next_step"
+does one small unit of work; the background worker thread and the admin page
+both call it.
+"""
+
+import threading;
+import time;
+import from services.models {
+    DataRoot, Institution, Professor, FacultyPublicationAnchor, HasInstitution,
+    HasProfessor, HasAnchor, HasHiringSignal, HasGrant, Authored,
+    get_data_root, now_iso, normalize_name, find_institution
+}
+import from services.openalex { list_top_us_institutions, short_id }
+import from services.crawler {
+    PageData, fetch_page, extract_faculty, extract_profile, guess_directories, same_domain
+}
+import from services.pipeline { resolve_institution, process_professor, institution_awards }
+import services.universities as unis;
+import services.fetchers as fx;
+
+glob PRIORITY: list[dict] = unis.PRIORITY as list[dict],
+     TIER_REASON: dict = unis.TIER_REASON as dict;
+
+obj ConfigStatus {
+    has openalex_ok: bool = False,
+        openalex_mailto: bool = False,
+        openalex_key: bool = False,
+        llm_key: bool = False;
+}
+
+obj InstitutionStatus {
+    has id: str = "",
+        name: str = "",
+        city: str = "",
+        state: str = "",
+        openalex_institution_id: str = "",
+        priority_tier: int = 4,
+        priority_reason: str = "",
+        pipeline_state: str = "",
+        pipeline_note: str = "",
+        professors: int = 0,
+        processed: int = 0,
+        matched: int = 0,
+        unresolved: int = 0,
+        papers: int = 0,
+        grants: int = 0,
+        hiring: int = 0;
+}
+
+obj StepResult {
+    has ok: bool = True,
+        message: str = "",
+        institution: str = "",
+        all_done: bool = False;
+}
+
+obj WorkerState {
+    has running: bool = False,
+        steps: int = 0,
+        last_message: str = "",
+        last_at: str = "",
+        log: list[str] = [];
+}
+
+glob MAX_PROFESSORS_PER_INSTITUTION: int = 60,
+     FINISHED: list[str] = ["DONE", "NO_FACULTY_FOUND", "FAILED"],
+     WORKER: WorkerState = WorkerState();
+
+def _status_for(inst: Institution) -> InstitutionStatus {
+    profs = [inst ->:HasProfessor:->];
+    st = InstitutionStatus(
+        id=jid(inst), name=inst.name, city=inst.city, state=inst.state,
+        openalex_institution_id=inst.openalex_institution_id,
+        priority_tier=inst.priority_tier, priority_reason=inst.priority_reason,
+        pipeline_state=inst.pipeline_state, pipeline_note=inst.pipeline_note,
+        professors=len(profs)
+    );
+    for p in profs {
+        if p.pipeline_done { st.processed += 1; }
+        if p.match_status == "MATCHED" { st.matched += 1; }
+        elif p.match_status == "UNRESOLVED" { st.unresolved += 1; }
+        st.papers += len([p ->:Authored:->]);
+        st.grants += len([p ->:HasGrant:->]);
+        if len([s for s in [p ->:HasHiringSignal:->] if s.quote]) > 0 { st.hiring += 1; }
+    }
+    return st;
+}
+
+def _queue() -> list[Institution] {
+    insts = [get_data_root() ->:HasInstitution:->];
+    insts.sort(key=lambda (i: Institution) -> int { return i.priority_tier * 10000 + i.priority_rank; });
+    return insts;
+}
+
+def _dirs_for(inst: Institution) -> list[list[str]] {
+    for row in PRIORITY {
+        if row["ipeds"] == inst.ipeds_id and len(row["dirs"]) > 0 {
+            return row["dirs"] as list[list[str]];
+        }
+    }
+    out: list[list[str]] = [];
+    for g in guess_directories(inst.name, inst.official_website) {
+        if g.url and same_domain(g.url, inst.official_website) {
+            out.append([g.department, g.url]);
+        }
+    }
+    return out;
+}
+
+def _crawl_faculty(inst: Institution) -> int {
+    existing = [p.normalized_name for p in [inst ->:HasProfessor:->]];
+    added = 0;
+    ts = now_iso();
+    for d in _dirs_for(inst) {
+        if len(existing) >= MAX_PROFESSORS_PER_INSTITUTION { break; }
+        page = fetch_page(d[1]);
+        if not page.ok { continue; }
+        for f in extract_faculty(page, d[0]) {
+            nn = normalize_name(f.name);
+            if nn in existing or len(existing) >= MAX_PROFESSORS_PER_INSTITUTION { continue; }
+            p = Professor(
+                name=f.name.strip(), normalized_name=nn, title=f.title or "Professor",
+                department=f.department or d[0], institution_id=jid(inst),
+                faculty_url=f.profile_url or page.url, created_at=ts, updated_at=ts
+            );
+            inst +>:HasProfessor():+> p;
+            existing.append(nn);
+            added += 1;
+        }
+    }
+    return added;
+}
+
+def enrich_profile(p: Professor) -> None {
+    if p.profile_extracted or not p.faculty_url { return; }
+    p.profile_extracted = True;
+    info = extract_profile(fetch_page(p.faculty_url), p.name);
+    if info is None { return; }
+    if info.lab_url and not p.lab_url { p.lab_url = info.lab_url; }
+    if info.personal_url and not p.personal_url { p.personal_url = info.personal_url; }
+    if info.orcid and not p.orcid { p.orcid = short_id(info.orcid); }
+    have = [a.title.lower() for a in [p ->:HasAnchor:->]];
+    ts = now_iso();
+    for pub in info.publications {
+        if not pub.title or pub.title.lower() in have or len(have) >= 3 { continue; }
+        p +>:HasAnchor():+> FacultyPublicationAnchor(
+            title=pub.title, doi=pub.doi, publication_year=pub.year, url=pub.url, created_at=ts
+        );
+        have.append(pub.title.lower());
+    }
+}
+
+def _step_institution(inst: Institution) -> str {
+    if inst.pipeline_state == "QUEUED" {
+        resolve_institution(inst);
+        inst.pipeline_state = "CRAWLING";
+        return f"{inst.name}: OpenAlex institution {inst.openalex_institution_id or 'not found'}";
+    }
+    if inst.pipeline_state == "CRAWLING" {
+        added = _crawl_faculty(inst);
+        if len([inst ->:HasProfessor:->]) == 0 {
+            inst.pipeline_state = "NO_FACULTY_FOUND";
+            inst.pipeline_note = "No faculty directory could be read. Add directory URLs in services/universities.py.";
+            return f"{inst.name}: no faculty directory readable";
+        }
+        inst.pipeline_state = "PROCESSING";
+        return f"{inst.name}: imported {added} professors from official faculty pages";
+    }
+    if inst.pipeline_state == "PROCESSING" {
+        todo = [p for p in [inst ->:HasProfessor:->] if not p.pipeline_done];
+        if len(todo) > 0 {
+            enrich_profile(todo[0]);
+            return process_professor(todo[0], inst);
+        }
+        inst.pipeline_state = "UNIVERSITY_AWARDS";
+        return f"{inst.name}: all professors processed (incl. hiring)";
+    }
+    if inst.pipeline_state == "UNIVERSITY_AWARDS" {
+        extra = institution_awards(inst);
+        inst.pipeline_state = "DONE";
+        inst.pipeline_note = f"{extra} extra grant links from institution-wide awards.";
+        return f"{inst.name}: done";
+    }
+    return f"{inst.name}: {inst.pipeline_state}";
+}
+
+def _expand_queue() -> int {
+    data = get_data_root();
+    insts = [data ->:HasInstitution:->];
+    known_ids = [i.openalex_institution_id for i in insts if i.openalex_institution_id];
+    known_names = [i.name.lower() for i in insts];
+    added = 0;
+    ts = now_iso();
+    for page_no in [1, 2, 3, 4, 5, 6] {
+        for r in list_top_us_institutions(page_no) {
+            oid = short_id(str(r.get("id", "") or ""));
+            name = str(r.get("display_name", "") or "");
+            if not name or oid in known_ids or name.lower() in known_names { continue; }
+            geo = r.get("geo", {}) or {};
+            inst = Institution(
+                name=name, city=str(geo.get("city", "") or ""), state=str(geo.get("region", "") or ""),
+                official_website=str(r.get("homepage_url", "") or ""), openalex_institution_id=oid,
+                ror_id=short_id(str(r.get("ror", "") or "")), priority_tier=4,
+                priority_rank=len(known_names), priority_reason=str(TIER_REASON[4]),
+                created_at=ts, updated_at=ts
+            );
+            data +>:HasInstitution():+> inst;
+            known_ids.append(oid);
+            known_names.append(name.lower());
+            added += 1;
+            if added >= 25 { return added; }
+        }
+    }
+    return added;
+}
+
+def _load_priority() -> int {
+    data = get_data_root();
+    known = [i.ipeds_id for i in [data ->:HasInstitution:->]];
+    ts = now_iso();
+    rank = 0;
+    added = 0;
+    for row in PRIORITY {
+        rank += 1;
+        if row["ipeds"] in known { continue; }
+        tier = int(row["tier"]);
+        data +>:HasInstitution():+> Institution(
+            name=str(row["name"]), city=str(row["city"]), state=str(row["state"]),
+            official_website=str(row["web"]), ipeds_id=str(row["ipeds"]), ror_id=str(row["ror"]),
+            priority_tier=tier, priority_rank=rank, priority_reason=str(TIER_REASON[tier]),
+            created_at=ts, updated_at=ts
+        );
+        added += 1;
+    }
+    return added;
+}
+
+def _log(msg: str) -> None {
+    WORKER.last_message = msg;
+    WORKER.last_at = now_iso();
+    WORKER.steps += 1;
+    WORKER.log = ([WORKER.last_at[11:19] + "  " + msg] + WORKER.log)[:40];
+    print(f"[worker] {msg}");
+}
+
+def _step_unlocked() -> StepResult {
+    if len([get_data_root() ->:HasInstitution:->]) == 0 {
+        n = _load_priority();
+        return StepResult(message=f"Loaded {n} priority universities.");
+    }
+    for inst in _queue() {
+        if inst.pipeline_state in FINISHED { continue; }
+        try {
+            return StepResult(message=_step_institution(inst), institution=inst.name);
+        } except Exception as e {
+            inst.pipeline_state = "FAILED";
+            inst.pipeline_note = str(e)[:300];
+            return StepResult(ok=False, message=f"{inst.name}: failed ({str(e)[:200]})", institution=inst.name);
+        }
+    }
+    added = _expand_queue();
+    if added == 0 {
+        return StepResult(message="All universities processed.", all_done=True);
+    }
+    return StepResult(message=f"Priority universities complete. Queued {added} more US universities.");
+}
+
+def step_once() -> StepResult {
+    fx.acquire();
+    try {
+        return _step_unlocked();
+    } finally {
+        fx.release();
+    }
+}
+
+# ---- endpoints ----
+
+def:pub load_priority_universities() -> list[InstitutionStatus] {
+    _load_priority();
+    return [_status_for(i) for i in _queue()];
+}
+
+def:pub get_pipeline_status() -> list[InstitutionStatus] {
+    return [_status_for(i) for i in _queue()];
+}
+
+def:pub process_next_step() -> StepResult {
+    r = step_once();
+    _log(r.message);
+    return r;
+}
+
+def:pub get_worker_state() -> WorkerState {
+    return WORKER;
+}
+
+def:pub get_config_status() -> ConfigStatus {
+    d = fx.config_status() as dict;
+    return ConfigStatus(
+        openalex_ok=bool(d["openalex_ok"]), openalex_mailto=bool(d["openalex_mailto"]),
+        openalex_key=bool(d["openalex_key"]), llm_key=bool(d["llm_key"])
+    );
+}
+
+def _worker_loop() -> None {
+    while WORKER.running {
+        try {
+            r = step_once();
+            _log(r.message);
+            if r.all_done {
+                WORKER.running = False;
+                break;
+            }
+        } except Exception as e {
+            _log("Worker error: " + str(e)[:200]);
+            time.sleep(10);
+        }
+        time.sleep(1);
+    }
+}
+
+def:pub set_worker(running: bool) -> WorkerState {
+    # Faculty-page extraction and hiring research need an LLM; refuse to start blind.
+    if running and not bool(fx.llm_configured()) {
+        _log("Cannot start: add an LLM API key (OPENAI_API_KEY) in Settings > Environment, then restart the preview.");
+        return WORKER;
+    }
+    was = WORKER.running;
+    WORKER.running = running;
+    if running and not was {
+        threading.Thread(target=_worker_loop, daemon=True).start();
+        _log("Auto-processing started.");
+    } elif not running {
+        _log("Auto-processing paused.");
+    }
+    return WORKER;
+}
+
+def:pub reset_institution(institution_id: str) -> InstitutionStatus | None {
+    inst = find_institution(institution_id);
+    if inst is None { return None; }
+    inst.pipeline_state = "QUEUED";
+    inst.pipeline_note = "";
+    for p in [inst ->:HasProfessor:->] { p.pipeline_done = False; }
+    return _status_for(inst);
+}

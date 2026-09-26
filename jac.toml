@@ -12,16 +12,16 @@ api_key = "${OPENAI_API_KEY:-}"
 
 
 [jac-shadcn]
-style = "nova"
-baseColor = "neutral"
-theme = "amber"
-font = "inter"
-radius = "default"
+style = "lyra"
+baseColor = "stone"
+theme = "indigo"
+font = "dm-sans"
+radius = "small"
 menuAccent = "subtle"
 menuColor = "default"
-
 [dependencies]
 [dependencies.npm]
+"@fontsource-variable/dm-sans" = "*"
 react = "^18.2.0"
 react-dom = "^18.2.0"
 react-router-dom = "^6.22.0"

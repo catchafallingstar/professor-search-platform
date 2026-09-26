@@ -6,6 +6,6 @@ def:pub Skeleton(props: any) -> JsxElement {
         <div
             {**attrs}
             data-slot="skeleton"
-            className={cn("bg-muted rounded-md animate-pulse", props["className"])}
+            className={cn("bg-muted rounded-none animate-pulse", props["className"])}
         />;
 }

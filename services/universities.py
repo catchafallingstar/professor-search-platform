@@ -1,0 +1,78 @@
+"""University priority queue.
+
+tier 1 = Michigan, tier 2 = surrounding states (OH, IN, IL, WI, MN),
+tier 3 = top 30 national. Tier 4 (everything else) is pulled from OpenAlex
+automatically once tiers 1-3 are fully processed, including hiring.
+
+"dirs" = official faculty directory pages [department, url]. Where empty, the
+LLM proposes directory URLs on the university's own domain and each one is
+fetched to verify before use. Add URLs here for any school that shows
+NO_FACULTY_FOUND (some sites block automated requests).
+"""
+
+TIER_REASON = {1: "Michigan", 2: "Surrounding state", 3: "Top 30 national", 4: "Expansion"}
+
+
+def _u(name, city, state, web, ipeds, ror, tier, dirs=None):
+    return {"name": name, "city": city, "state": state, "web": web, "ipeds": ipeds,
+            "ror": ror, "tier": tier, "dirs": dirs or []}
+
+
+PRIORITY = [
+    # ---- Tier 1: Michigan ----
+    _u("University of Michigan", "Ann Arbor", "MI", "https://umich.edu", "170976", "00jmfr291", 1, [
+        ["Computer Science and Engineering", "https://cse.engin.umich.edu/people/faculty/"],
+        ["Electrical and Computer Engineering", "https://ece.engin.umich.edu/people/directory/faculty/"],
+        ["Robotics", "https://robotics.umich.edu/people/faculty/"],
+    ]),
+    _u("Michigan State University", "East Lansing", "MI", "https://msu.edu", "171100", "05hs6h993", 1, [
+        ["Computer Science and Engineering", "https://engineering.msu.edu/about/departments/cse/faculty"],
+    ]),
+    _u("Wayne State University", "Detroit", "MI", "https://wayne.edu", "172644", "01070mq45", 1),
+    _u("Michigan Technological University", "Houghton", "MI", "https://www.mtu.edu", "171128", "0036rpn28", 1),
+    _u("Western Michigan University", "Kalamazoo", "MI", "https://wmich.edu", "172699", "04j198w64", 1),
+    _u("Oakland University", "Rochester", "MI", "https://www.oakland.edu", "171571", "01ythxj32", 1),
+    # ---- Tier 2: surrounding states ----
+    _u("Purdue University", "West Lafayette", "IN", "https://www.purdue.edu", "243780", "02dqehb95", 2, [
+        ["Computer Science", "https://www.cs.purdue.edu/people/faculty/index.html"],
+    ]),
+    _u("Indiana University Bloomington", "Bloomington", "IN", "https://www.indiana.edu", "151351", "01kg8sb98", 2),
+    _u("University of Notre Dame", "Notre Dame", "IN", "https://www.nd.edu", "152080", "00mkhxb43", 2),
+    _u("Ohio State University", "Columbus", "OH", "https://www.osu.edu", "204796", "00rs6vg23", 2),
+    _u("Case Western Reserve University", "Cleveland", "OH", "https://case.edu", "201645", "051fd9666", 2),
+    _u("University of Cincinnati", "Cincinnati", "OH", "https://www.uc.edu", "201885", "01e3m7079", 2),
+    _u("University of Illinois Urbana-Champaign", "Champaign", "IL", "https://illinois.edu", "145637", "047426m28", 2),
+    _u("Northwestern University", "Evanston", "IL", "https://www.northwestern.edu", "147767", "000e0be47", 2),
+    _u("University of Chicago", "Chicago", "IL", "https://www.uchicago.edu", "144050", "024mw5h28", 2),
+    _u("University of Wisconsin-Madison", "Madison", "WI", "https://www.wisc.edu", "240444", "01y2jtd41", 2),
+    _u("University of Minnesota Twin Cities", "Minneapolis", "MN", "https://twin-cities.umn.edu", "174066", "017zqws13", 2),
+    # ---- Tier 3: top 30 national ----
+    _u("Massachusetts Institute of Technology", "Cambridge", "MA", "https://www.mit.edu", "166683", "042nb2s44", 3),
+    _u("Stanford University", "Stanford", "CA", "https://www.stanford.edu", "243744", "00f54p054", 3),
+    _u("Harvard University", "Cambridge", "MA", "https://www.harvard.edu", "166027", "03vek6s52", 3),
+    _u("California Institute of Technology", "Pasadena", "CA", "https://www.caltech.edu", "110404", "05dxps055", 3),
+    _u("Princeton University", "Princeton", "NJ", "https://www.princeton.edu", "186131", "00hx57361", 3),
+    _u("Yale University", "New Haven", "CT", "https://www.yale.edu", "130794", "03v76x132", 3),
+    _u("Columbia University", "New York", "NY", "https://www.columbia.edu", "190150", "00hj8s172", 3),
+    _u("University of Pennsylvania", "Philadelphia", "PA", "https://www.upenn.edu", "215062", "00b30xv10", 3),
+    _u("Johns Hopkins University", "Baltimore", "MD", "https://www.jhu.edu", "162928", "00za53h95", 3),
+    _u("Duke University", "Durham", "NC", "https://duke.edu", "198419", "00py81415", 3),
+    _u("Brown University", "Providence", "RI", "https://www.brown.edu", "217156", "05gq02987", 3),
+    _u("Cornell University", "Ithaca", "NY", "https://www.cornell.edu", "190415", "05bnh6r87", 3),
+    _u("Rice University", "Houston", "TX", "https://www.rice.edu", "227757", "008zs3103", 3),
+    _u("Dartmouth College", "Hanover", "NH", "https://home.dartmouth.edu", "182670", "049s0rh22", 3),
+    _u("Vanderbilt University", "Nashville", "TN", "https://www.vanderbilt.edu", "221999", "02vm5rt34", 3),
+    _u("Washington University in St. Louis", "St. Louis", "MO", "https://wustl.edu", "179867", "01yc7t268", 3),
+    _u("University of California, Berkeley", "Berkeley", "CA", "https://www.berkeley.edu", "110635", "01an7q238", 3),
+    _u("University of California, Los Angeles", "Los Angeles", "CA", "https://www.ucla.edu", "110662", "046rm7j60", 3),
+    _u("Carnegie Mellon University", "Pittsburgh", "PA", "https://www.cmu.edu", "211440", "05x2bcf33", 3),
+    _u("Georgia Institute of Technology", "Atlanta", "GA", "https://www.gatech.edu", "139755", "01zkghx44", 3),
+    _u("Emory University", "Atlanta", "GA", "https://www.emory.edu", "139658", "03czfpz43", 3),
+    _u("University of Virginia", "Charlottesville", "VA", "https://www.virginia.edu", "234076", "0153tk833", 3),
+    _u("University of Southern California", "Los Angeles", "CA", "https://www.usc.edu", "123961", "03taz7m60", 3),
+    _u("University of California San Diego", "La Jolla", "CA", "https://ucsd.edu", "110680", "0168r3w48", 3),
+    _u("University of Texas at Austin", "Austin", "TX", "https://www.utexas.edu", "228778", "00hj54h04", 3),
+    _u("University of Washington", "Seattle", "WA", "https://www.washington.edu", "236948", "00cvxb145", 3),
+    _u("New York University", "New York", "NY", "https://www.nyu.edu", "193900", "0190ak572", 3),
+    _u("University of North Carolina at Chapel Hill", "Chapel Hill", "NC", "https://www.unc.edu", "199120", "0130frc33", 3),
+]
