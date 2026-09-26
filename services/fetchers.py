@@ -69,7 +69,9 @@ def _worker_loop():
                 stop_worker()
                 break
             if not result.get("ok", True) and rate_limit_status()["limited"]:
-                time.sleep(30)  # nothing left to crawl and every key is cooling down
+                # Nothing left to crawl and every key is cooling down: poll slowly.
+                # A key added from the Pipeline page is picked up on the next poll.
+                time.sleep(120)
         except Exception as e:
             print(f"[worker] step failed: {e}")
             base = None
@@ -191,6 +193,21 @@ def _mask(c):
     return "no-key pool" if c == _ANON else f"key ...{c[-4:]}"
 
 
+_NOTICE = {"shown": False}
+
+
+def first_rate_notice():
+    """True only the first time per rate-limit wait (process-wide, survives across requests)."""
+    if _NOTICE["shown"]:
+        return False
+    _NOTICE["shown"] = True
+    return True
+
+
+def clear_rate_notice():
+    _NOTICE["shown"] = False
+
+
 def rate_limit_status():
     creds = _credentials()
     avail = _available()
@@ -255,7 +272,6 @@ def _get_json(path, params=None):
                     wait = int(e.headers.get("Retry-After", "0") or 0)
                     if wait > 60:  # this credential's daily budget is gone -> rotate
                         _COOLDOWN[cred] = time.time() + wait
-                        print(f"[openalex] {_mask(cred)} rate-limited for {wait // 60} min; rotating")
                         switch = True
                         break
                     time.sleep(max(wait, 2 * (attempt + 1)))

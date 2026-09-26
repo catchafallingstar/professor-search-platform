@@ -257,7 +257,7 @@ def _log(msg: str) -> None {
     WORKER.last_at = now_iso();
     WORKER.steps += 1;
     WORKER.log = ([WORKER.last_at[11:19] + "  " + msg] + WORKER.log)[:40];
-    print(f"[worker] {msg}");
+    print(f"[pipeline] {msg}");
 }
 
 def _crawl_only_step() -> StepResult | None {
@@ -341,6 +341,15 @@ def:pub get_pipeline_status() -> list[InstitutionStatus] {
 
 def:pub process_next_step() -> StepResult {
     r = step_once();
+    limited = bool((fx.rate_limit_status() as dict)["limited"]);
+    if limited and not r.ok and r.message.startswith("All OpenAlex credentials") {
+        # Waiting on a rate limit is expected, not an error: note it once per wait period.
+        if bool(fx.first_rate_notice()) {
+            _log("Waiting for OpenAlex rate limit to reset (faculty crawling is done for now). Add keys on this page to continue sooner.");
+        }
+        return r;
+    }
+    fx.clear_rate_notice();
     _log(r.message);
     return r;
 }
