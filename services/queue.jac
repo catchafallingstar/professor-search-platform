@@ -28,7 +28,9 @@ obj ConfigStatus {
     has openalex_ok: bool = False,
         openalex_mailto: bool = False,
         openalex_key: bool = False,
-        llm_key: bool = False;
+        llm_key: bool = False,
+        rate_limited: bool = False,
+        rate_limit_message: str = "";
 }
 
 obj InstitutionStatus {
@@ -255,6 +257,9 @@ def _step_unlocked() -> StepResult {
         if inst.pipeline_state in FINISHED { continue; }
         try {
             return StepResult(message=_step_institution(inst), institution=inst.name);
+        } except fx.RateLimited as rl {
+            # Keep state as-is; the same professor is retried after the limit resets.
+            return StepResult(ok=False, message=str(rl), institution=inst.name);
         } except Exception as e {
             inst.pipeline_state = "FAILED";
             inst.pipeline_note = str(e)[:300];
@@ -289,54 +294,43 @@ def:pub get_pipeline_status() -> list[InstitutionStatus] {
 }
 
 def:pub process_next_step() -> StepResult {
+    if bool((fx.rate_limit_status() as dict)["limited"]) {
+        return StepResult(ok=False, message=str((fx.rate_limit_status() as dict)["message"]));
+    }
     r = step_once();
     _log(r.message);
     return r;
 }
 
 def:pub get_worker_state() -> WorkerState {
+    WORKER.running = bool(fx.worker_running());
     return WORKER;
 }
 
 def:pub get_config_status() -> ConfigStatus {
     d = fx.config_status() as dict;
+    rl = fx.rate_limit_status() as dict;
     return ConfigStatus(
         openalex_ok=bool(d["openalex_ok"]), openalex_mailto=bool(d["openalex_mailto"]),
-        openalex_key=bool(d["openalex_key"]), llm_key=bool(d["llm_key"])
+        openalex_key=bool(d["openalex_key"]), llm_key=bool(d["llm_key"]),
+        rate_limited=bool(rl["limited"]), rate_limit_message=str(rl["message"])
     );
 }
 
-def _worker_loop() -> None {
-    while WORKER.running {
-        try {
-            r = step_once();
-            _log(r.message);
-            if r.all_done {
-                WORKER.running = False;
-                break;
-            }
-        } except Exception as e {
-            _log("Worker error: " + str(e)[:200]);
-            time.sleep(10);
-        }
-        time.sleep(1);
-    }
-}
-
 def:pub set_worker(running: bool) -> WorkerState {
-    # Faculty-page extraction and hiring research need an LLM; refuse to start blind.
-    if running and not bool(fx.llm_configured()) {
-        _log("Cannot start: add an LLM API key (OPENAI_API_KEY) in Settings > Environment, then restart the preview.");
-        return WORKER;
-    }
-    was = WORKER.running;
-    WORKER.running = running;
-    if running and not was {
-        threading.Thread(target=_worker_loop, daemon=True).start();
+    # The Python worker thread calls /function/process_next_step, so every step runs
+    # in a normal request context and its graph writes persist.
+    if running {
+        if not bool(fx.llm_configured()) {
+            _log("No LLM key: importing faculty + OpenAlex papers/grants now. Hiring checks run once OPENAI_API_KEY is added.");
+        }
+        fx.start_worker();
         _log("Auto-processing started.");
-    } elif not running {
+    } else {
+        fx.stop_worker();
         _log("Auto-processing paused.");
     }
+    WORKER.running = bool(fx.worker_running());
     return WORKER;
 }
 

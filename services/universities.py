@@ -20,17 +20,23 @@ def _u(name, city, state, web, ipeds, ror, tier, dirs=None):
 
 PRIORITY = [
     # ---- Tier 1: Michigan ----
+    # Directory URLs below were fetched and parsed successfully from the sandbox.
     _u("University of Michigan", "Ann Arbor", "MI", "https://umich.edu", "170976", "00jmfr291", 1, [
-        ["Computer Science and Engineering", "https://cse.engin.umich.edu/people/faculty/"],
-        ["Electrical and Computer Engineering", "https://ece.engin.umich.edu/people/directory/faculty/"],
         ["Robotics", "https://robotics.umich.edu/people/faculty/"],
+        # cse.engin.umich.edu / ece.engin.umich.edu return 403 to automated requests
     ]),
     _u("Michigan State University", "East Lansing", "MI", "https://msu.edu", "171100", "05hs6h993", 1, [
-        ["Computer Science and Engineering", "https://engineering.msu.edu/about/departments/cse/faculty"],
+        ["College of Engineering", "https://engineering.msu.edu/faculty"],
     ]),
-    _u("Wayne State University", "Detroit", "MI", "https://wayne.edu", "172644", "01070mq45", 1),
-    _u("Michigan Technological University", "Houghton", "MI", "https://www.mtu.edu", "171128", "0036rpn28", 1),
-    _u("Western Michigan University", "Kalamazoo", "MI", "https://wmich.edu", "172699", "04j198w64", 1),
+    _u("Wayne State University", "Detroit", "MI", "https://wayne.edu", "172644", "01070mq45", 1, [
+        ["Computer Science", "https://engineering.wayne.edu/computer-science/faculty"],
+    ]),
+    _u("Michigan Technological University", "Houghton", "MI", "https://www.mtu.edu", "171128", "0036rpn28", 1, [
+        ["Computer Science", "https://www.mtu.edu/cs/department/faculty/"],
+    ]),
+    _u("Western Michigan University", "Kalamazoo", "MI", "https://wmich.edu", "172699", "04j198w64", 1, [
+        ["Computer Science", "https://wmich.edu/cs/directory"],
+    ]),
     _u("Oakland University", "Rochester", "MI", "https://www.oakland.edu", "171571", "01ythxj32", 1),
     # ---- Tier 2: surrounding states ----
     _u("Purdue University", "West Lafayette", "IN", "https://www.purdue.edu", "243780", "02dqehb95", 2, [
@@ -41,11 +47,17 @@ PRIORITY = [
     _u("Ohio State University", "Columbus", "OH", "https://www.osu.edu", "204796", "00rs6vg23", 2),
     _u("Case Western Reserve University", "Cleveland", "OH", "https://case.edu", "201645", "051fd9666", 2),
     _u("University of Cincinnati", "Cincinnati", "OH", "https://www.uc.edu", "201885", "01e3m7079", 2),
-    _u("University of Illinois Urbana-Champaign", "Champaign", "IL", "https://illinois.edu", "145637", "047426m28", 2),
-    _u("Northwestern University", "Evanston", "IL", "https://www.northwestern.edu", "147767", "000e0be47", 2),
+    _u("University of Illinois Urbana-Champaign", "Champaign", "IL", "https://illinois.edu", "145637", "047426m28", 2, [
+        ["Computer Science", "https://siebelschool.illinois.edu/about/people/all-faculty"],
+    ]),
+    _u("Northwestern University", "Evanston", "IL", "https://www.northwestern.edu", "147767", "000e0be47", 2, [
+        ["Computer Science", "https://www.mccormick.northwestern.edu/computer-science/people/faculty/"],
+    ]),
     _u("University of Chicago", "Chicago", "IL", "https://www.uchicago.edu", "144050", "024mw5h28", 2),
     _u("University of Wisconsin-Madison", "Madison", "WI", "https://www.wisc.edu", "240444", "01y2jtd41", 2),
-    _u("University of Minnesota Twin Cities", "Minneapolis", "MN", "https://twin-cities.umn.edu", "174066", "017zqws13", 2),
+    _u("University of Minnesota Twin Cities", "Minneapolis", "MN", "https://twin-cities.umn.edu", "174066", "017zqws13", 2, [
+        ["Computer Science", "https://cse.umn.edu/cs/faculty"],
+    ]),
     # ---- Tier 3: top 30 national ----
     _u("Massachusetts Institute of Technology", "Cambridge", "MA", "https://www.mit.edu", "166683", "042nb2s44", 3),
     _u("Stanford University", "Stanford", "CA", "https://www.stanford.edu", "243744", "00f54p054", 3),

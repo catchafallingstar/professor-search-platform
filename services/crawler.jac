@@ -81,8 +81,25 @@ sem guess_directories_llm = "Give up to 5 official faculty directory page URLs a
 def extract_hiring_llm(page_text: str, professor_name: str) -> str by llm(temperature=0.0);
 sem extract_hiring_llm = "Return the single exact sentence copied verbatim from the page text in which this professor or their lab says they are currently looking for, recruiting or accepting PhD students, postdocs, research assistants or other researchers. A description of current lab members is NOT a hiring statement. If there is no such sentence, return exactly NONE.";
 
+def llm_ready() -> bool {
+    return bool(fx.llm_configured());
+}
+
+def _rules_faculty(page: PageData, department_hint: str) -> list[FacultyEntry] {
+    rows = fx.extract_faculty_rules({"ok": page.ok, "text": page.text}, department_hint) as list[dict];
+    return [
+        FacultyEntry(name=str(r["name"]), title=str(r["title"]), department=str(r["department"]), profile_url=str(r["profile_url"]))
+        for r in rows
+    ];
+}
+
 def extract_faculty(page: PageData, department_hint: str) -> list[FacultyEntry] {
     if not page.ok { return []; }
+    # Deterministic parser first: works without an LLM key and never invents people.
+    found_rules = _rules_faculty(page, department_hint);
+    if len(found_rules) > 0 or not llm_ready() {
+        return found_rules;
+    }
     try {
         found = extract_faculty_llm(page.text[:MAX_TEXT], page.url, department_hint);
         low = page.text.lower();
@@ -94,7 +111,7 @@ def extract_faculty(page: PageData, department_hint: str) -> list[FacultyEntry] 
 }
 
 def extract_profile(page: PageData, professor_name: str) -> ProfileExtract | None {
-    if not page.ok { return None; }
+    if not page.ok or not llm_ready() { return None; }
     try {
         res = extract_profile_llm(page.text[:MAX_TEXT], professor_name);
         res.publications = res.publications[:3];
@@ -106,6 +123,7 @@ def extract_profile(page: PageData, professor_name: str) -> ProfileExtract | Non
 }
 
 def guess_directories(university: str, website: str) -> list[DirectoryGuess] {
+    if not llm_ready() { return []; }
     try {
         return guess_directories_llm(university, website)[:5];
     } except Exception as e {
@@ -115,7 +133,7 @@ def guess_directories(university: str, website: str) -> list[DirectoryGuess] {
 }
 
 def find_hiring_quote(page: PageData, professor_name: str) -> str {
-    if not page.ok { return ""; }
+    if not page.ok or not llm_ready() { return ""; }
     q = "";
     try {
         q = extract_hiring_llm(page.text[:MAX_TEXT], professor_name).strip().strip("\"");

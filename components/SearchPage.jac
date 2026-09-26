@@ -62,21 +62,27 @@ def:pub SearchPage() -> JsxElement {
     async def run_search(q: str, u: str, d: str, s: str, g: bool, h: bool) -> None {
         loading = True;
         error = "";
-        try {
-            results = await search_professors(q, u, d, s, g, h);
-        } except Exception as e {
-            error = "Could not load professors: " + str(e);
+        # The API server can still be starting right after a preview restart; retry briefly.
+        for attempt in range(4) {
+            try {
+                results = await search_professors(q, u, d, s, g, h);
+                loading = False;
+                return;
+            } except Exception {
+                await new(Promise, lambda (resolve: any) { setTimeout(resolve, 1500 * (attempt + 1)); });
+            }
         }
+        error = "Could not reach the server. It may still be starting, try again in a moment.";
         loading = False;
     }
 
     async can with entry {
+        await run_search("", "", "", "", False, False);
         try {
             options = await get_filter_options();
         } except Exception {
             options = None;
         }
-        await run_search("", "", "", "", False, False);
     }
 
     def reset() -> None {
@@ -176,7 +182,7 @@ def:pub SearchPage() -> JsxElement {
             <EmptyHeader>
                 <EmptyMedia variant="icon"><HugeiconsIcon icon={UserGroupIcon} strokeWidth={2} /></EmptyMedia>
                 <EmptyTitle>{"No professors match"}</EmptyTitle>
-                <EmptyDescription>{"Clear the filters, or seed sample universities from the pipeline page."}</EmptyDescription>
+                <EmptyDescription>{"Clear the filters, or start the pipeline to import faculty from Michigan universities first."}</EmptyDescription>
             </EmptyHeader>
             <EmptyContent>
                 <div className="flex gap-2">

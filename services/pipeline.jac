@@ -15,7 +15,7 @@ import from services.openalex {
     short_id, clean_doi
 }
 import from services.hiring { HiringResearch, research_hiring }
-import from services.crawler { fetch_page, find_hiring_quote, quote_on_page }
+import from services.crawler { fetch_page, find_hiring_quote, quote_on_page, llm_ready }
 
 obj PipelineResult {
     has ok: bool = True,
@@ -32,7 +32,14 @@ def names_match(prof_name: str, candidate: str) -> bool {
     a = normalize_name(prof_name).split();
     b = normalize_name(candidate).split();
     if len(a) == 0 or len(b) == 0 { return False; }
-    if a[-1] == b[-1] { return a[0][0] == b[0][0]; }
+    if a[-1] == b[-1] {
+        if a[0][0] == b[0][0] { return True; }
+        # nickname / middle-name form: "Chad Jenkins" vs "Odest Chadwicke Jenkins"
+        for g in b[:-1] {
+            if len(a[0]) >= 3 and (g.startswith(a[0]) or a[0].startswith(g)) and len(g) >= 3 { return True; }
+        }
+        return False;
+    }
     return a[0] == b[-1] and a[-1] == b[0];   # family-name-first ordering
 }
 
@@ -65,6 +72,17 @@ def _author_at(author_id: str, inst_id: str) -> bool {
         if short_id(_s(i, "id")) == inst_id { return True; }
     }
     for af in (a.get("affiliations", []) or []) {
+        if short_id(_s(af.get("institution", {}) or {}, "id")) == inst_id { return True; }
+    }
+    return False;
+}
+
+def _affiliated(author: dict, inst_id: str) -> bool {
+    if not inst_id { return False; }
+    for i in (author.get("last_known_institutions", []) or []) {
+        if short_id(_s(i, "id")) == inst_id { return True; }
+    }
+    for af in (author.get("affiliations", []) or []) {
         if short_id(_s(af.get("institution", {}) or {}, "id")) == inst_id { return True; }
     }
     return False;
@@ -114,16 +132,35 @@ def match_professor(p: Professor, inst: Institution) -> None {
         return;
     }
     cands = [a for a in search_authors(p.name, inst_id) if names_match(p.name, _s(a, "display_name"))];
+    note = "Matched on name + institution (one clear OpenAlex author).";
+    if len(cands) == 0 {
+        # Last-known institution may lag; accept an author whose affiliation history includes this university.
+        cands = [
+            a for a in search_authors(p.name, "")
+            if names_match(p.name, _s(a, "display_name")) and _affiliated(a, inst_id)
+        ];
+        note = "Matched on name + institution in OpenAlex affiliation history.";
+    }
     if p.orcid {
         by_orcid = [a for a in cands if short_id(_s(a, "orcid")) == p.orcid];
         if len(by_orcid) == 1 { cands = by_orcid; }
+    }
+    if len(cands) > 1 {
+        # OpenAlex often splits one person into a main profile plus tiny fragments.
+        cands.sort(key=lambda (a: dict) -> int { return int(a.get("works_count", 0) or 0); }, reverse=True);
+        top = int(cands[0].get("works_count", 0) or 0);
+        rest = sum([int(a.get("works_count", 0) or 0) for a in cands[1:]]);
+        if top >= 20 and top >= 5 * max(rest, 1) {
+            cands = [cands[0]];
+            note = "Matched on name + institution (dominant OpenAlex profile; smaller duplicates ignored).";
+        }
     }
     if len(cands) == 1 {
         p.openalex_author_id = short_id(_s(cands[0], "id"));
         if not p.orcid { p.orcid = short_id(_s(cands[0], "orcid")); }
         p.match_status = "MATCHED";
         p.match_method = "NAME_INSTITUTION";
-        p.match_note = "Matched on name + institution (one clear OpenAlex author).";
+        p.match_note = note;
     } else {
         p.match_status = "UNRESOLVED";
         p.match_method = "";
@@ -330,7 +367,10 @@ def process_professor(p: Professor, inst: Institution) -> str {
     if p.openalex_author_id {
         grants = discover_grants(p, inst, ingest_works(p));
     }
-    hiring_for(p, inst);
+    # Hiring research needs an LLM key; without one we leave it unchecked (never "not hiring").
+    if llm_ready() {
+        hiring_for(p, inst);
+    }
     p.pipeline_done = True;
     p.updated_at = now_iso();
     n_papers = len([p ->:Authored:->]);

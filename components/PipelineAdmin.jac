@@ -115,7 +115,7 @@ def:pub PipelineAdmin() -> JsxElement {
             </div>
             <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={step} disabled={busy or running or len(rows) == 0}>{"Run one step"}</Button>
-                <Button className="shadow-sm" onClick={toggle} disabled={busy or len(rows) == 0 or (not running and not llm_ok)}>
+                <Button className="shadow-sm" onClick={toggle} disabled={busy or len(rows) == 0}>
                     {busy and <Spinner />}{"Pause auto-processing" if running else "Start auto-processing"}
                 </Button>
             </div>
@@ -129,6 +129,10 @@ def:pub PipelineAdmin() -> JsxElement {
         </div>
 
         {error and <div className="text-sm text-destructive">{error}</div>}
+        {config and config.rate_limited and <div className="flex items-start gap-2 rounded-lg border bg-card pt-3 pb-3 pl-4 pr-4 text-sm shadow-sm">
+            <HugeiconsIcon icon={Alert01Icon} strokeWidth={2} className="mt-0.5 size-4 shrink-0 text-destructive" />
+            <span>{config.rate_limit_message + " The worker waits and resumes automatically."}</span>
+        </div>}
 
         <div className="grid gap-6 lg:grid-cols-3">
             <Card className="shadow-sm lg:col-span-1">
@@ -139,11 +143,11 @@ def:pub PipelineAdmin() -> JsxElement {
                 <CardContent className="flex flex-col">
                     <ConfigRow label="OpenAlex API" ok={config.openalex_ok if config else False} detail="Tested live. No key required." />
                     <ConfigRow label="OPENALEX_MAILTO (optional)" ok={config.openalex_mailto if config else False} detail="Your email, for OpenAlex's faster polite pool." />
-                    <ConfigRow label="OPENALEX_API_KEY (optional)" ok={config.openalex_key if config else False} detail="Only if you have an OpenAlex premium key." />
+                    <ConfigRow label="OPENALEX_API_KEY (optional)" ok={config.openalex_key if config else False} detail="Recommended. Free key from openalex.org raises the daily request limit." />
                     <ConfigRow label="OPENAI_API_KEY (required)" ok={llm_ok} detail="Reads faculty pages and finds hiring statements." />
                     {not llm_ok and <div className="mt-3 flex items-start gap-2 rounded-lg bg-muted pt-2.5 pb-2.5 pl-3 pr-3 text-xs">
                         <HugeiconsIcon icon={Alert01Icon} strokeWidth={2} className="mt-0.5 size-3.5 shrink-0" />
-                        <span>{"Auto-processing stays off until an LLM key is added."}</span>
+                        <span>{"Without a key, faculty, papers, subfields and grants are still imported. Hiring checks start once the key is added."}</span>
                     </div>}
                 </CardContent>
             </Card>
