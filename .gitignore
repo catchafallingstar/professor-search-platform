@@ -1,2 +1,4 @@
 .jac/
 node_modules/
+services/.openalex_keys
+services/.worker_running

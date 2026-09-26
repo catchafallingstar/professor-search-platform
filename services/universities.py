@@ -88,3 +88,28 @@ PRIORITY = [
     _u("New York University", "New York", "NY", "https://www.nyu.edu", "193900", "0190ak572", 3),
     _u("University of North Carolina at Chapel Hill", "Chapel Hill", "NC", "https://www.unc.edu", "199120", "0130frc33", 3),
 ]
+
+# Extra directory pages verified from the sandbox (fetched + rule parser found 5+ professors).
+# Keyed by IPEDS id; merged into PRIORITY below.
+EXTRA_DIRS = {
+    "171571": [["Engineering and Computer Science", "https://www.oakland.edu/secs/directory/"]],
+    "166683": [["Electrical Engineering and Computer Science", "https://www.eecs.mit.edu/role/faculty/"]],
+    "243744": [["Computer Science", "https://www.cs.stanford.edu/people/faculty"]],
+    "166027": [["Computer Science", "https://seas.harvard.edu/computer-science/people"]],
+    "110404": [["Computing and Mathematical Sciences", "https://www.cms.caltech.edu/people"]],
+    "186131": [["Computer Science", "https://www.cs.princeton.edu/people/faculty"]],
+    "190150": [["Computer Science", "https://www.cs.columbia.edu/people/faculty/"]],
+    "162928": [["Computer Science", "https://www.cs.jhu.edu/faculty/"]],
+    "198419": [["Computer Science", "https://cs.duke.edu/people/faculty"]],
+    "190415": [["Computer Science", "https://www.cs.cornell.edu/people/faculty"]],
+    "182670": [["Computer Science", "https://web.cs.dartmouth.edu/people"]],
+    "110635": [["Electrical Engineering and Computer Sciences", "https://www2.eecs.berkeley.edu/Faculty/Lists/CS/faculty.html"]],
+    "211440": [["Computer Science", "https://csd.cmu.edu/people/faculty"]],
+    "139755": [["Computing", "https://www.cc.gatech.edu/people/faculty"]],
+    "139658": [["Computer Science", "https://www.cs.emory.edu/people/faculty/"]],
+    "236948": [["Computer Science and Engineering", "https://www.cs.washington.edu/people/faculty"]],
+    "193900": [["Computer Science", "https://cs.nyu.edu/dynamic/people/faculty/"]],
+}
+
+for _row in PRIORITY:
+    _row["dirs"] = _row["dirs"] + EXTRA_DIRS.get(_row["ipeds"], [])

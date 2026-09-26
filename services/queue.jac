@@ -30,7 +30,10 @@ obj ConfigStatus {
         openalex_key: bool = False,
         llm_key: bool = False,
         rate_limited: bool = False,
-        rate_limit_message: str = "";
+        rate_limit_message: str = "",
+        keys_total: int = 0,
+        keys_available: int = 0,
+        keys_invalid: int = 0;
 }
 
 obj InstitutionStatus {
@@ -71,24 +74,32 @@ glob MAX_PROFESSORS_PER_INSTITUTION: int = 60,
      FINISHED: list[str] = ["DONE", "NO_FACULTY_FOUND", "FAILED"],
      WORKER: WorkerState = WorkerState();
 
-def _status_for(inst: Institution) -> InstitutionStatus {
+def _recount(inst: Institution) -> None {
+    # Heavy walk over professors -> papers/grants; run only when this university changes.
     profs = [inst ->:HasProfessor:->];
-    st = InstitutionStatus(
+    inst.n_professors = len(profs);
+    inst.n_processed = 0; inst.n_matched = 0; inst.n_unresolved = 0;
+    inst.n_papers = 0; inst.n_grants = 0; inst.n_hiring = 0;
+    for p in profs {
+        if p.pipeline_done { inst.n_processed += 1; }
+        if p.match_status == "MATCHED" { inst.n_matched += 1; }
+        elif p.match_status == "UNRESOLVED" { inst.n_unresolved += 1; }
+        inst.n_papers += len([p ->:Authored:->]);
+        inst.n_grants += len([p ->:HasGrant:->]);
+        if len([s for s in [p ->:HasHiringSignal:->] if s.quote]) > 0 { inst.n_hiring += 1; }
+    }
+}
+
+def _status_for(inst: Institution) -> InstitutionStatus {
+    # Cheap: reads cached counters only (the admin page polls this every few seconds).
+    return InstitutionStatus(
         id=jid(inst), name=inst.name, city=inst.city, state=inst.state,
         openalex_institution_id=inst.openalex_institution_id,
         priority_tier=inst.priority_tier, priority_reason=inst.priority_reason,
         pipeline_state=inst.pipeline_state, pipeline_note=inst.pipeline_note,
-        professors=len(profs)
+        professors=inst.n_professors, processed=inst.n_processed, matched=inst.n_matched,
+        unresolved=inst.n_unresolved, papers=inst.n_papers, grants=inst.n_grants, hiring=inst.n_hiring
     );
-    for p in profs {
-        if p.pipeline_done { st.processed += 1; }
-        if p.match_status == "MATCHED" { st.matched += 1; }
-        elif p.match_status == "UNRESOLVED" { st.unresolved += 1; }
-        st.papers += len([p ->:Authored:->]);
-        st.grants += len([p ->:HasGrant:->]);
-        if len([s for s in [p ->:HasHiringSignal:->] if s.quote]) > 0 { st.hiring += 1; }
-    }
-    return st;
 }
 
 def _queue() -> list[Institution] {
@@ -172,6 +183,7 @@ def _step_institution(inst: Institution) -> str {
         return f"{inst.name}: imported {added} professors from official faculty pages";
     }
     if inst.pipeline_state == "PROCESSING" {
+        resolve_institution(inst);
         todo = [p for p in [inst ->:HasProfessor:->] if not p.pipeline_done];
         if len(todo) > 0 {
             enrich_profile(todo[0]);
@@ -248,17 +260,51 @@ def _log(msg: str) -> None {
     print(f"[worker] {msg}");
 }
 
+def _crawl_only_step() -> StepResult | None {
+    # OpenAlex is rate-limited: keep importing faculty from university sites (no OpenAlex needed).
+    for inst in _queue() {
+        if inst.pipeline_state not in ["QUEUED", "CRAWLING"] { continue; }
+        try {
+            added = _crawl_faculty(inst);
+            total = len([inst ->:HasProfessor:->]);
+            if total == 0 {
+                inst.pipeline_state = "NO_FACULTY_FOUND";
+                inst.pipeline_note = "No faculty directory could be read. Add directory URLs in services/universities.py.";
+                return StepResult(message=f"{inst.name}: no faculty directory readable", institution=inst.name);
+            }
+            # OpenAlex institution id is resolved later when PROCESSING starts.
+            inst.pipeline_state = "PROCESSING";
+            _recount(inst);
+            return StepResult(message=f"{inst.name}: imported {added} professors (OpenAlex matching waits for rate limit)", institution=inst.name);
+        } except Exception as e {
+            inst.pipeline_state = "FAILED";
+            inst.pipeline_note = str(e)[:300];
+            return StepResult(ok=False, message=f"{inst.name}: crawl failed ({str(e)[:200]})", institution=inst.name);
+        }
+    }
+    return None;
+}
+
 def _step_unlocked() -> StepResult {
     if len([get_data_root() ->:HasInstitution:->]) == 0 {
         n = _load_priority();
         return StepResult(message=f"Loaded {n} priority universities.");
     }
+    if bool((fx.rate_limit_status() as dict)["limited"]) {
+        r = _crawl_only_step();
+        if r is not None { return r; }
+        return StepResult(ok=False, message=str((fx.rate_limit_status() as dict)["message"]));
+    }
     for inst in _queue() {
         if inst.pipeline_state in FINISHED { continue; }
         try {
-            return StepResult(message=_step_institution(inst), institution=inst.name);
+            msg = _step_institution(inst);
+            _recount(inst);
+            return StepResult(message=msg, institution=inst.name);
         } except fx.RateLimited as rl {
             # Keep state as-is; the same professor is retried after the limit resets.
+            r = _crawl_only_step();
+            if r is not None { return r; }
             return StepResult(ok=False, message=str(rl), institution=inst.name);
         } except Exception as e {
             inst.pipeline_state = "FAILED";
@@ -294,9 +340,6 @@ def:pub get_pipeline_status() -> list[InstitutionStatus] {
 }
 
 def:pub process_next_step() -> StepResult {
-    if bool((fx.rate_limit_status() as dict)["limited"]) {
-        return StepResult(ok=False, message=str((fx.rate_limit_status() as dict)["message"]));
-    }
     r = step_once();
     _log(r.message);
     return r;
@@ -313,7 +356,9 @@ def:pub get_config_status() -> ConfigStatus {
     return ConfigStatus(
         openalex_ok=bool(d["openalex_ok"]), openalex_mailto=bool(d["openalex_mailto"]),
         openalex_key=bool(d["openalex_key"]), llm_key=bool(d["llm_key"]),
-        rate_limited=bool(rl["limited"]), rate_limit_message=str(rl["message"])
+        rate_limited=bool(rl["limited"]), rate_limit_message=str(rl["message"]),
+        keys_total=int(d["openalex_keys_total"]), keys_available=int(d["openalex_keys_available"]),
+        keys_invalid=int(d["openalex_keys_invalid"])
     );
 }
 
@@ -332,6 +377,38 @@ def:pub set_worker(running: bool) -> WorkerState {
     }
     WORKER.running = bool(fx.worker_running());
     return WORKER;
+}
+
+def:pub recount_all() -> StepResult {
+    for inst in _queue() { _recount(inst); }
+    return StepResult(message="Counters refreshed.");
+}
+
+def:pub retry_unreadable() -> StepResult {
+    # Re-queue universities whose directories could not be read (e.g. after new URLs were added).
+    n = 0;
+    for inst in _queue() {
+        if inst.pipeline_state in ["NO_FACULTY_FOUND", "FAILED"] {
+            inst.pipeline_state = "QUEUED";
+            inst.pipeline_note = "";
+            n += 1;
+        }
+    }
+    msg = f"Re-queued {n} universities for another faculty crawl.";
+    _log(msg);
+    return StepResult(message=msg);
+}
+
+def:pub add_openalex_key(key: str) -> StepResult {
+    # Adds a key to the rotating pool immediately (no restart), verified with one live call.
+    r = fx.add_key(key) as dict;
+    _log(str(r["message"]));
+    return StepResult(ok=bool(r["ok"]), message=str(r["message"]));
+}
+
+with entry {
+    # Resume auto-processing after a preview restart if it was running before.
+    fx.resume_if_flagged();
 }
 
 def:pub reset_institution(institution_id: str) -> InstitutionStatus | None {

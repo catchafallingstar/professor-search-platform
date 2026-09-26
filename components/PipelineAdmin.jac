@@ -11,9 +11,10 @@ import from .ui.table { Table, TableHeader, TableBody, TableRow, TableHead, Tabl
 import from .ui.empty { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription, EmptyContent }
 sv import from ..services.queue {
     load_priority_universities, get_pipeline_status, process_next_step, get_worker_state,
-    set_worker, reset_institution, get_config_status,
+    set_worker, reset_institution, get_config_status, add_openalex_key,
     InstitutionStatus, StepResult, WorkerState, ConfigStatus
 }
+import from .ui.input { Input }
 
 def:pub StatTile(label: str, value: int, icon: any) -> JsxElement {
     return <Card className="shadow-sm">
@@ -45,7 +46,21 @@ def:pub PipelineAdmin() -> JsxElement {
         config: ConfigStatus | None = None,
         loading: bool = True,
         busy: bool = False,
-        error: str = "";
+        error: str = "",
+        new_key: str = "",
+        key_msg: str = "";
+
+    async def add_key() -> None {
+        if not new_key.strip() { return; }
+        busy = True;
+        try {
+            res: StepResult = await add_openalex_key(new_key.strip());
+            key_msg = res.message;
+            if res.ok { new_key = ""; }
+            config = await get_config_status();
+        } except Exception as e { key_msg = str(e); }
+        busy = False;
+    }
 
     async def refresh() -> None {
         try {
@@ -131,7 +146,7 @@ def:pub PipelineAdmin() -> JsxElement {
         {error and <div className="text-sm text-destructive">{error}</div>}
         {config and config.rate_limited and <div className="flex items-start gap-2 rounded-lg border bg-card pt-3 pb-3 pl-4 pr-4 text-sm shadow-sm">
             <HugeiconsIcon icon={Alert01Icon} strokeWidth={2} className="mt-0.5 size-4 shrink-0 text-destructive" />
-            <span>{config.rate_limit_message + " The worker waits and resumes automatically."}</span>
+            <span>{config.rate_limit_message + " Faculty imports from university sites continue meanwhile; matching resumes automatically."}</span>
         </div>}
 
         <div className="grid gap-6 lg:grid-cols-3">
@@ -143,7 +158,22 @@ def:pub PipelineAdmin() -> JsxElement {
                 <CardContent className="flex flex-col">
                     <ConfigRow label="OpenAlex API" ok={config.openalex_ok if config else False} detail="Tested live. No key required." />
                     <ConfigRow label="OPENALEX_MAILTO (optional)" ok={config.openalex_mailto if config else False} detail="Your email, for OpenAlex's faster polite pool." />
-                    <ConfigRow label="OPENALEX_API_KEY (optional)" ok={config.openalex_key if config else False} detail="Recommended. Free key from openalex.org raises the daily request limit." />
+                    <ConfigRow
+                        label="OPENALEX_API_KEYS (recommended)"
+                        ok={config.openalex_key if config else False}
+                        detail={(
+                            (str(config.keys_available) + " of " + str(config.keys_total + 1) + " credentials available (keys + no-key pool)" + ("; " + str(config.keys_invalid) + " invalid" if config.keys_invalid > 0 else "") + ". ")
+                            if config else ""
+                        ) + "Comma-separated keys. Rotates to the next key when one hits its daily limit."}
+                    />
+                    <div className="flex flex-col gap-2 border-b pt-2.5 pb-3">
+                        <span className="text-xs font-medium">{"Add another OpenAlex key (takes effect immediately)"}</span>
+                        <div className="flex gap-2">
+                            <Input value={new_key} placeholder="Paste an OpenAlex API key" className="h-8 text-xs" onChange={lambda (e: ChangeEvent) { new_key = e.target.value; }} />
+                            <Button size="sm" variant="outline" onClick={add_key} disabled={busy or not new_key.strip()}>{"Add key"}</Button>
+                        </div>
+                        {key_msg and <span className="text-xs text-muted-foreground">{key_msg}</span>}
+                    </div>
                     <ConfigRow label="OPENAI_API_KEY (required)" ok={llm_ok} detail="Reads faculty pages and finds hiring statements." />
                     {not llm_ok and <div className="mt-3 flex items-start gap-2 rounded-lg bg-muted pt-2.5 pb-2.5 pl-3 pr-3 text-xs">
                         <HugeiconsIcon icon={Alert01Icon} strokeWidth={2} className="mt-0.5 size-3.5 shrink-0" />

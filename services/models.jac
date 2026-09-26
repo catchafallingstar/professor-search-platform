@@ -17,6 +17,13 @@ node Institution {
         priority_reason: str = "",
         pipeline_state: str = "QUEUED",
         pipeline_note: str = "",
+        n_professors: int = 0,
+        n_processed: int = 0,
+        n_matched: int = 0,
+        n_unresolved: int = 0,
+        n_papers: int = 0,
+        n_grants: int = 0,
+        n_hiring: int = 0,
         created_at: str = "",
         updated_at: str = "";
 }
@@ -34,6 +41,9 @@ node Professor {
         orcid: str = "",
         match_status: str = "PENDING",
         pipeline_done: bool = False,
+        cached_subfields: list[str] = [],
+        cached_grant_count: int = 0,
+        cached_has_hiring: bool = False,
         profile_extracted: bool = False,
         match_method: str = "",
         match_note: str = "",

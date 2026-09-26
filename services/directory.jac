@@ -131,15 +131,15 @@ def:pub search_professors(
             if department and p.department != department {
                 continue;
             }
-            subs = _recent_subfields(p);
+            subs = p.cached_subfields;
             if subfield and subfield not in subs {
                 continue;
             }
-            grants = len([p ->:HasGrant:->]);
+            grants = p.cached_grant_count;
             if has_grant and grants == 0 {
                 continue;
             }
-            hiring = _hiring_quote(p) != "";
+            hiring = p.cached_has_hiring;
             if has_hiring and not hiring {
                 continue;
             }
@@ -167,7 +167,7 @@ def:pub get_filter_options() -> FilterOptions {
             if p.department and p.department not in opts.departments {
                 opts.departments.append(p.department);
             }
-            for s in _recent_subfields(p) {
+            for s in p.cached_subfields {
                 if s not in opts.subfields {
                     opts.subfields.append(s);
                 }

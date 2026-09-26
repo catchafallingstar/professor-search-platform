@@ -193,7 +193,8 @@ def:pub SearchPage() -> JsxElement {
         </Empty>}
 
         {len(results) > 0 and <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {for p in results { <ResultCard key={p.id} p={p} /> }}
+            {for p in results[:60] { <ResultCard key={p.id} p={p} /> }}
         </div>}
+        {len(results) > 60 and <p className="text-center text-sm text-muted-foreground">{"Showing the first 60 of " + str(len(results)) + " professors. Narrow by name, university, department or subfield."}</p>}
     </div>;
 }

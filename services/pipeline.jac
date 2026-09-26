@@ -360,6 +360,20 @@ def hiring_for(p: Professor, inst: Institution) -> bool {
 
 # ---------- orchestration ----------
 
+def refresh_professor_cache(p: Professor) -> None {
+    # Search reads these instead of walking papers/grants for every professor on every query.
+    subs: list[str] = [];
+    for paper in [p ->:Authored:->] {
+        for s in [paper ->:HasSubfield:->] {
+            if s.name not in subs { subs.append(s.name); }
+        }
+    }
+    subs.sort();
+    p.cached_subfields = subs;
+    p.cached_grant_count = len([p ->:HasGrant:->]);
+    p.cached_has_hiring = len([s for s in [p ->:HasHiringSignal:->] if s.quote]) > 0;
+}
+
 def process_professor(p: Professor, inst: Institution) -> str {
     resolve_institution(inst);
     match_professor(p, inst);
@@ -372,6 +386,7 @@ def process_professor(p: Professor, inst: Institution) -> str {
         hiring_for(p, inst);
     }
     p.pipeline_done = True;
+    refresh_professor_cache(p);
     p.updated_at = now_iso();
     n_papers = len([p ->:Authored:->]);
     return f"{p.name}: {p.match_status}, {n_papers} papers, {grants} grants";

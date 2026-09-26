@@ -75,8 +75,10 @@ def:pub ProfilePage() -> JsxElement {
         loading = True;
         error = "";
         try {
-            prof = await get_professor_profile(pid);
-            if prof is None { error = "Professor not found."; }
+            # Check the fetched value, not f"prof": state updates land on the next render.
+            fetched = await get_professor_profile(pid);
+            prof = fetched;
+            if fetched is None { error = "Professor not found."; }
         } except Exception as e {
             error = "Could not load this profile: " + str(e);
         }
