@@ -123,16 +123,47 @@ def stop_worker():
         pass
 
 
+def ensure_owner_account():
+    """Recreate the owner login after a sandbox reset wiped the account store.
+
+    Needs OWNER_PASSWORD (Settings > Environment). Registering an account that already
+    exists simply fails, so this is safe to run on every boot."""
+    email = os.environ.get("OWNER_EMAIL", "bxybai@umich.edu").strip().lower()
+    password = os.environ.get("OWNER_PASSWORD", "")
+    base = _local_api()
+    if not password or not base:
+        if not password:
+            print("[auth] OWNER_PASSWORD not set; the owner account is not auto-created.")
+        return
+    body = {"identities": [{"type": "email", "value": email}],
+            "credential": {"type": "password", "password": password}}
+    req = urllib.request.Request(base + "/user/register", data=json.dumps(body).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        urllib.request.urlopen(req, timeout=30).read()
+        print(f"[auth] owner account {email} created.")
+    except Exception as e:
+        print(f"[auth] owner account already present or not created ({str(e)[:80]}).")
+
+
 def restore_then_resume():
-    """On server boot: restore data/directory.json into the (possibly empty) graph via the
-    internal endpoint, re-index for search, then resume the worker if it was running."""
+    """On server boot: recreate the owner account, restore the saved directory into the
+    (possibly empty) graph, re-index, queue the priority universities and start the worker.
+    Nobody has to sign in for the pipeline to resume after a sandbox reset.
+    Set PIPELINE_AUTOSTART=0 to keep the worker stopped on boot."""
     def _go():
         for _ in range(60):          # wait for the API to come up (max ~2 min)
             if _local_api():
                 break
             time.sleep(2)
         time.sleep(8)                # the account system finishes initialising after /healthz answers
-        for action in ("restore", "reindex"):
+        try:
+            ensure_owner_account()
+        except Exception as e:
+            print(f"[auth] owner bootstrap failed: {e}")
+        autostart = os.environ.get("PIPELINE_AUTOSTART", "1").strip() not in ("0", "false", "no")
+        actions = ("restore", "reindex", "load_priority") if autostart else ("restore", "reindex")
+        for action in actions:
             for attempt in range(12):   # retry ~2 min: early calls can 500 while the server warms up
                 try:
                     r = call_internal("internal_action", {"action": action, "arg": ""}, timeout=900)
@@ -142,7 +173,10 @@ def restore_then_resume():
                     if attempt == 11:
                         print(f"[persist] {action} failed after retries: {e}")
                     time.sleep(10)
-        resume_if_flagged()
+        if autostart:
+            start_worker()
+        else:
+            resume_if_flagged()
     threading.Thread(target=_go, daemon=True).start()
 
 

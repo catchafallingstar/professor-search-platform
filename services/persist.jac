@@ -12,6 +12,7 @@ import from services.models {
     HasHiringSignal, HasSubfieldIndex, HasPaperIndex, HasGrantIndex, get_data_root
 }
 import from services.pipeline { upsert_subfield, refresh_professor_cache }
+import from services.access { _registry }
 
 glob INST_FIELDS: list[str] = [
     "name", "city", "state", "official_website", "ipeds_id", "openalex_institution_id", "ror_id",
@@ -84,7 +85,7 @@ def export_directory(force: bool = False) -> bool {
     if len(insts) == 0 {
         return False;   # never overwrite a good snapshot with an empty graph
     }
-    return bool(snap.save({"institutions": insts}, force));
+    return bool(snap.save({"institutions": insts, "staff": list(_registry().emails)}, force));
 }
 
 def restore_directory() -> str {
@@ -97,6 +98,10 @@ def restore_directory() -> str {
         return "No snapshot to restore.";
     }
     d: dict = raw as dict;
+    reg = _registry();
+    for e in (d.get("staff", []) or []) {
+        if e and e not in reg.emails { reg.emails = reg.emails + [str(e)]; }
+    }
     papers_by_id: dict = {};
     grants_by_id: dict = {};
     n_i = 0; n_p = 0;
