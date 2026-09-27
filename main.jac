@@ -9,7 +9,7 @@ import from services.directory {
     search_professors, get_filter_options, get_professor_profile,
     ProfessorSummary, FilterOptions, ProfessorDetail, PaperView, GrantView, AnchorView
 }
-import from services.access { whoami, promote_staff, list_staff, WhoAmI, AccessResult }
+import from services.access { whoami, promote_staff, revoke_staff, list_staff, reset_staff_registry, WhoAmI, AccessResult }
 import from services.history {
     record_search, record_view, get_search_history, get_view_history,
     clear_search_history, clear_view_history, SearchHistoryItem, ViewHistoryItem

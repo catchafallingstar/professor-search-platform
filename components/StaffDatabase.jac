@@ -13,7 +13,8 @@ sv import from ..services.staffdb {
     staff_overview, staff_institutions, staff_professors,
     DbOverview, DbInstitution, DbProfessor, DbProfessorPage
 }
-sv import from ..services.access { list_staff, promote_staff, AccessResult }
+sv import from ..services.access { list_staff, promote_staff, revoke_staff, AccessResult }
+import from .AuthContext { useAuth }
 
 glob PAGE_SIZE: int = 25;
 
@@ -80,7 +81,19 @@ def:pub StaffDatabase() -> JsxElement {
         } except Exception as e { staff_msg = str(e); }
     }
 
+    async def remove_staff(e: str) -> None {
+        try {
+            res: AccessResult = await revoke_staff(e);
+            staff_msg = res.message;
+            staff = await list_staff();
+        } except Exception as ex { staff_msg = str(ex); }
+    }
+
     async can with entry { await load_all(); }
+
+    auth = useAuth();
+    who: any = auth["me"];
+    is_owner: bool = bool(who and who.is_owner);
 
     total = page.total if page else 0;
     rows: list[DbProfessor] = page.rows if page else [];
@@ -216,20 +229,25 @@ def:pub StaffDatabase() -> JsxElement {
             <Card className="shadow-sm">
                 <CardHeader>
                     <CardTitle>{"Staff accounts"}</CardTitle>
-                    <CardDescription>{"Staff can run the pipeline and see this database."}</CardDescription>
+                    <CardDescription>{"Staff can run the pipeline and see this database. Only the site owner can add or remove staff."}</CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-3">
                     <div className="flex flex-col gap-1">
-                        {for e in staff { <span key={e} className="truncate rounded-md bg-muted/60 pt-1.5 pb-1.5 pl-2.5 pr-2.5 text-sm">{e}</span> }}
+                        {for e in staff {
+                            <div key={e} className="flex items-center justify-between gap-2 rounded-md bg-muted/60 pt-1.5 pb-1.5 pl-2.5 pr-1.5">
+                                <span className="truncate text-sm">{e}</span>
+                                {is_owner and not e.endswith("(owner)") and <Button variant="ghost" size="sm" onClick={lambda { remove_staff(e); }}>{"Remove"}</Button>}
+                            </div>
+                        }}
                         {len(staff) == 0 and not loading and <span className="text-sm text-muted-foreground">{"No staff emails recorded."}</span>}
                     </div>
-                    <div className="flex gap-2">
+                    {is_owner and <div className="flex gap-2">
                         <Input value={new_staff} type="email" placeholder="colleague@university.edu" className="h-9"
                             onChange={lambda (e: ChangeEvent) { new_staff = e.target.value; }} />
-                        <Button variant="outline" onClick={add_staff} disabled={not new_staff.strip()}>{"Add"}</Button>
-                    </div>
+                        <Button variant="outline" onClick={add_staff} disabled={not new_staff.strip()}>{"Add staff"}</Button>
+                    </div>}
                     {staff_msg and <p className="text-xs text-muted-foreground">{staff_msg}</p>}
-                    <p className="text-xs text-muted-foreground">{"They get staff access the next time they sign in with that email."}</p>
+                    {is_owner and <p className="text-xs text-muted-foreground">{"They get staff access the next time they sign in with that email."}</p>}
                 </CardContent>
             </Card>
         </div>

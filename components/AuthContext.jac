@@ -13,7 +13,7 @@ glob _me: any = None,
      _loading: bool = False;
 
 def _broadcast() -> None {
-    window.dispatchEvent(new(CustomEvent, "atlas-auth", {"detail": {"ready": _ready}}));  # jac:ignore[E1030]
+    window.dispatchEvent(new(CustomEvent, "atlas-auth", {"detail": {"ready": _ready}}));  # jac:ignore[E1030,E1053]
 }
 
 async def:pub refreshSession(email: str = "") -> any {

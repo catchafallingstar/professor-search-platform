@@ -77,7 +77,7 @@ def:pub SearchPage() -> JsxElement {
                 }
                 return;
             } except Exception {
-                await new(Promise, lambda (resolve: any) { setTimeout(resolve, 1500 * (attempt + 1)); });
+                await new(Promise, lambda (resolve: any) { setTimeout(resolve, 1500 * (attempt + 1)); });  # jac:ignore[E1053]
             }
         }
         error = "Could not reach the server. It may still be starting, try again in a moment.";
@@ -88,7 +88,7 @@ def:pub SearchPage() -> JsxElement {
 
     async can with entry {
         # Prefill from the URL, e.g. when re-running a search from account history.
-        p: any = new(URLSearchParams, loc.search);
+        p: any = new(URLSearchParams, loc.search);  # jac:ignore[E1053]
         q0: str = p.get("q") or "";
         u0: str = p.get("university") or "";
         d0: str = p.get("department") or "";

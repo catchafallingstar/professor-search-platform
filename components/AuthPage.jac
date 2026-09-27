@@ -66,7 +66,7 @@ def:pub AuthPage() -> JsxElement {
             return;
         }
         busy = False;
-        params: any = new(URLSearchParams, loc.search);
+        params: any = new(URLSearchParams, loc.search);  # jac:ignore[E1053]
         nxt: str = params.get("next") or "";
         if nxt and nxt.startswith("/") {
             nav(nxt, {"replace": True});
