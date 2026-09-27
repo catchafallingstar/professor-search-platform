@@ -11,7 +11,7 @@ import from .ui.skeleton { Skeleton }
 import from .ui.native_select { NativeSelect, NativeSelectOption, NativeSelectOptGroup }
 import from .ui.empty { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription, EmptyContent }
 sv import from ..services.directory {
-    search_professors, get_filter_options, ProfessorSummary, FilterOptions
+    search_professors_page, get_filter_options, ProfessorSummary, FilterOptions, SearchResults
 }
 sv import from ..services.history { record_search }
 import from "@jac/runtime" { useLocation, jacIsLoggedIn }
@@ -64,6 +64,8 @@ def:pub SearchPage() -> JsxElement {
         has_grant: bool = False,
         has_hiring: bool = False,
         loading: bool = True,
+        loading_more: bool = False,
+        total: int = 0,
         error: str = "";
 
     async def run_search(q: str, u: str, d: str, s: str, g: bool, h: bool) -> None {
@@ -75,16 +77,18 @@ def:pub SearchPage() -> JsxElement {
         loading = True;
         error = "";
         # The API server can still be starting right after a preview restart; retry briefly.
-        found: list[ProfessorSummary] = [];
+        # A new search (typing or changing a filter) always starts over with the first 50.
+        page: SearchResults | None = None;
         for attempt in range(4) {
             try {
-                found = await search_professors(q, u, d, s, g, h);
+                page = await search_professors_page(q, u, d, s, g, h, 0, 50);
                 if ticket != _search_seq { return; }   # a newer search has started
-                results = found;
+                results = page.items;
+                total = page.total;
                 loading = False;
                 if jacIsLoggedIn() {
                     # Saved to the signed-in user's own history (server collapses keystroke-by-keystroke typing).
-                    try { await record_search(q, u, d, s, g, h, len(found)); } except Exception {}
+                    try { await record_search(q, u, d, s, g, h, page.total); } except Exception {}
                 }
                 return;
             } except Exception {
@@ -93,6 +97,22 @@ def:pub SearchPage() -> JsxElement {
         }
         error = "Could not reach the server. It may still be starting, try again in a moment.";
         loading = False;
+    }
+
+    async def load_more() -> None {
+        # Next 20 for the SAME filters; ignored if the filters changed while it was loading.
+        ticket = _search_seq;
+        loading_more = True;
+        try {
+            page: SearchResults = await search_professors_page(query, university, department, subfield, has_grant, has_hiring, len(results), 20);
+            if ticket == _search_seq {
+                results = results + page.items;
+                total = page.total;
+            }
+        } except Exception {
+            error = "Could not load more professors. Try again.";
+        }
+        loading_more = False;
     }
 
     loc = useLocation();
@@ -125,7 +145,7 @@ def:pub SearchPage() -> JsxElement {
     depts: list[str] = options.departments if options else [];
     subs: list[str] = options.subfields if options else [];
     flds: list[str] = options.fields if options else [];
-    count_label = "1 professor" if len(results) == 1 else str(len(results)) + " professors";
+    count_label = "1 professor" if total == 1 else str(total) + " professors";
 
     return <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 pt-8 pb-12 pl-6 pr-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
         <div className="flex flex-col gap-1">
@@ -229,8 +249,13 @@ def:pub SearchPage() -> JsxElement {
         </Empty>}
 
         {len(results) > 0 and <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {for p in results[:60] { <ResultCard key={p.id} p={p} /> }}
+            {for p in results { <ResultCard key={p.id} p={p} /> }}
         </div>}
-        {len(results) > 60 and <p className="text-center text-sm text-muted-foreground">{"Showing the first 60 of " + str(len(results)) + " professors. Narrow by name, university, department or subfield."}</p>}
+        {len(results) > 0 and <div className="flex flex-col items-center gap-3 pt-2">
+            <p className="text-sm tabular-nums text-muted-foreground">{"Showing " + str(len(results)) + " of " + str(total) + " professors"}</p>
+            {len(results) < total and <Button variant="outline" onClick={load_more} disabled={loading_more}>
+                {"Loading..." if loading_more else "Load 20 more"}
+            </Button>}
+        </div>}
     </div>;
 }

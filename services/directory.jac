@@ -19,6 +19,12 @@ obj ProfessorSummary {
         match_status: str = "";
 }
 
+obj SearchResults {
+    has items: list[ProfessorSummary] = [],
+        total: int = 0,
+        offset: int = 0;
+}
+
 obj FilterOptions {
     has universities: list[str] = [],
         departments: list[str] = [],
@@ -166,6 +172,68 @@ def:pub search_professors(
     }
     results.sort(key=lambda (r: ProfessorSummary) -> str { return r.name; });
     return results;
+}
+
+# In-memory search index: walking ~2000 professor nodes on every keystroke took 10-100s
+# while the pipeline was busy. Rebuilt at most once a minute; filtering is then pure Python.
+glob _SEARCH_CACHE: dict = {"t": 0.0, "rows": []};
+
+def _search_rows() -> list {
+    import time;
+    now = time.time();
+    if now - float(_SEARCH_CACHE["t"]) < 60 and len(_SEARCH_CACHE["rows"]) > 0 {
+        return _SEARCH_CACHE["rows"];
+    }
+    rows: list = [];
+    for inst in [get_data_root() ->:HasInstitution:->] {
+        inst_text = normalize_name(inst.name + " " + inst.city + " " + inst.state);
+        for p in [inst ->:HasProfessor:->] {
+            hay = p.search_text or normalize_name(" | ".join([p.name, p.title, p.department] + p.cached_fields + p.cached_subfields));
+            rows.append({
+                "hay": hay + " | " + inst_text,
+                "summary": ProfessorSummary(
+                    id=jid(p), name=p.name, title=p.title, department=p.department,
+                    university=inst.name, subfields=p.cached_subfields, fields=p.cached_fields,
+                    grant_count=p.cached_grant_count, has_hiring=p.cached_has_hiring,
+                    match_status=p.match_status
+                )
+            });
+        }
+    }
+    rows.sort(key=lambda (r: dict) -> str { return r["summary"].name; });
+    _SEARCH_CACHE["rows"] = rows;
+    _SEARCH_CACHE["t"] = now;
+    return rows;
+}
+
+def:pub search_professors_page(
+    query: str = "",
+    university: str = "",
+    department: str = "",
+    subfield: str = "",
+    has_grant: bool = False,
+    has_hiring: bool = False,
+    offset: int = 0,
+    limit: int = 50
+) -> SearchResults {
+    # One page of results (the Search page loads 50, then 20 more per "Load more").
+    has_grant = has_grant is True or str(has_grant).lower() == "true";
+    has_hiring = has_hiring is True or str(has_hiring).lower() == "true";
+    words = [w for w in normalize_name(query).split() if w];
+    everything: list[ProfessorSummary] = [];
+    for r in _search_rows() {
+        s: ProfessorSummary = r["summary"];
+        if university and s.university != university { continue; }
+        if department and s.department != department { continue; }
+        if subfield and subfield not in s.subfields and subfield not in s.fields { continue; }
+        if has_grant and s.grant_count == 0 { continue; }
+        if has_hiring and not s.has_hiring { continue; }
+        if len(words) > 0 and not all([w in r["hay"] for w in words]) { continue; }
+        everything.append(s);
+    }
+    start = max(0, int(offset));
+    size = max(1, min(int(limit), 200));
+    return SearchResults(items=everything[start:start + size], total=len(everything), offset=start);
 }
 
 def:pub get_filter_options() -> FilterOptions {
