@@ -33,7 +33,12 @@ def release():
 # Each step is sent to the app's own /function/process_next_step endpoint so it runs
 # inside a normal request context (graph writes persist and permissions apply).
 
-WORKER = {"running": False, "thread": None}
+WORKER = {"running": False, "thread": None, "token": ""}
+
+
+def set_worker_token(token):
+    """Internal secret the worker sends to /function/process_next_step (it is not a logged-in user)."""
+    WORKER["token"] = token or ""
 
 
 def _local_api():
@@ -60,7 +65,8 @@ def _worker_loop():
             time.sleep(5)
             continue
         try:
-            req = urllib.request.Request(base + "/function/process_next_step", data=b"{}",
+            payload = json.dumps({"worker_token": WORKER["token"]}).encode("utf-8")
+            req = urllib.request.Request(base + "/function/process_next_step", data=payload,
                                          headers={"Content-Type": "application/json"}, method="POST")
             with urllib.request.urlopen(req, timeout=600) as resp:
                 body = json.loads(resp.read().decode("utf-8"))

@@ -20,6 +20,7 @@ import from services.crawler {
 import from services.pipeline { resolve_institution, process_professor, institution_awards }
 import services.universities as unis;
 import services.fetchers as fx;
+import from services.access { require_staff, worker_token, check_worker_token }
 
 glob PRIORITY: list[dict] = unis.PRIORITY as list[dict],
      TIER_REASON: dict = unis.TIER_REASON as dict;
@@ -329,17 +330,33 @@ def step_once() -> StepResult {
 }
 
 # ---- endpoints ----
+# Everything the Pipeline page calls is def:priv + require_staff() (enforced on the server).
+# The background worker is not a user: it calls process_next_step with the internal token.
 
-def:pub load_priority_universities() -> list[InstitutionStatus] {
+def:priv load_priority_universities() -> list[InstitutionStatus] {
+    require_staff();
     _load_priority();
     return [_status_for(i) for i in _queue()];
 }
 
-def:pub get_pipeline_status() -> list[InstitutionStatus] {
+def:priv get_pipeline_status() -> list[InstitutionStatus] {
+    require_staff();
     return [_status_for(i) for i in _queue()];
 }
 
-def:pub process_next_step() -> StepResult {
+def:priv run_step_as_staff() -> StepResult {
+    require_staff();
+    return _run_step();
+}
+
+def:pub process_next_step(worker_token: str = "") -> StepResult {
+    if not check_worker_token(worker_token) {
+        return StepResult(ok=False, message="Forbidden");
+    }
+    return _run_step();
+}
+
+def _run_step() -> StepResult {
     r = step_once();
     limited = bool((fx.rate_limit_status() as dict)["limited"]);
     if limited and not r.ok and r.message.startswith("All OpenAlex credentials") {
@@ -354,12 +371,14 @@ def:pub process_next_step() -> StepResult {
     return r;
 }
 
-def:pub get_worker_state() -> WorkerState {
+def:priv get_worker_state() -> WorkerState {
+    require_staff();
     WORKER.running = bool(fx.worker_running());
     return WORKER;
 }
 
-def:pub get_config_status() -> ConfigStatus {
+def:priv get_config_status() -> ConfigStatus {
+    require_staff();
     d = fx.config_status() as dict;
     rl = fx.rate_limit_status() as dict;
     return ConfigStatus(
@@ -371,9 +390,10 @@ def:pub get_config_status() -> ConfigStatus {
     );
 }
 
-def:pub set_worker(running: bool) -> WorkerState {
-    # The Python worker thread calls /function/process_next_step, so every step runs
-    # in a normal request context and its graph writes persist.
+def:priv set_worker(running: bool) -> WorkerState {
+    # The Python worker thread calls /function/process_next_step (with the internal token),
+    # so every step runs in a normal request context and its graph writes persist.
+    require_staff();
     if running {
         if not bool(fx.llm_configured()) {
             _log("No LLM key: importing faculty + OpenAlex papers/grants now. Hiring checks run once OPENAI_API_KEY is added.");
@@ -388,13 +408,15 @@ def:pub set_worker(running: bool) -> WorkerState {
     return WORKER;
 }
 
-def:pub recount_all() -> StepResult {
+def:priv recount_all() -> StepResult {
+    require_staff();
     for inst in _queue() { _recount(inst); }
     return StepResult(message="Counters refreshed.");
 }
 
-def:pub retry_unreadable() -> StepResult {
+def:priv retry_unreadable() -> StepResult {
     # Re-queue universities whose directories could not be read (e.g. after new URLs were added).
+    require_staff();
     n = 0;
     for inst in _queue() {
         if inst.pipeline_state in ["NO_FACULTY_FOUND", "FAILED"] {
@@ -420,8 +442,9 @@ obj KeyStatus {
         order: int = 0;
 }
 
-def:pub list_openalex_keys() -> list[KeyStatus] {
+def:priv list_openalex_keys() -> list[KeyStatus] {
     # Masked (...last4) status of every credential in rotation order; full keys never leave the server.
+    require_staff();
     return [
         KeyStatus(
             id=str(r["id"]), source=str(r["source"]), state=str(r["state"]),
@@ -433,31 +456,36 @@ def:pub list_openalex_keys() -> list[KeyStatus] {
     ];
 }
 
-def:pub remove_openalex_key(key_id: str) -> StepResult {
+def:priv remove_openalex_key(key_id: str) -> StepResult {
+    require_staff();
     r = fx.remove_key(key_id) as dict;
     _log(str(r["message"]));
     return StepResult(ok=bool(r["ok"]), message=str(r["message"]));
 }
 
-def:pub reset_openalex_key(key_id: str) -> StepResult {
+def:priv reset_openalex_key(key_id: str) -> StepResult {
+    require_staff();
     r = fx.reset_key(key_id) as dict;
     _log(str(r["message"]));
     return StepResult(ok=bool(r["ok"]), message=str(r["message"]));
 }
 
-def:pub add_openalex_key(key: str) -> StepResult {
+def:priv add_openalex_key(key: str) -> StepResult {
     # Adds a key to the rotating pool immediately (no restart), verified with one live call.
+    require_staff();
     r = fx.add_key(key) as dict;
     _log(str(r["message"]));
     return StepResult(ok=bool(r["ok"]), message=str(r["message"]));
 }
 
 with entry {
-    # Resume auto-processing after a preview restart if it was running before.
+    # Worker authenticates to process_next_step with this token; then resume if it was running.
+    fx.set_worker_token(worker_token());
     fx.resume_if_flagged();
 }
 
-def:pub reset_institution(institution_id: str) -> InstitutionStatus | None {
+def:priv reset_institution(institution_id: str) -> InstitutionStatus | None {
+    require_staff();
     inst = find_institution(institution_id);
     if inst is None { return None; }
     inst.pipeline_state = "QUEUED";

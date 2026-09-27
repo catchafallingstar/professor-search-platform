@@ -15,6 +15,7 @@ import from services.openalex {
     short_id, clean_doi
 }
 import from services.hiring { HiringResearch, research_hiring }
+import from services.access { require_staff }
 import from services.crawler { fetch_page, find_hiring_quote, quote_on_page, llm_ready }
 
 obj PipelineResult {
@@ -392,7 +393,8 @@ def process_professor(p: Professor, inst: Institution) -> str {
     return f"{p.name}: {p.match_status}, {n_papers} papers, {grants} grants";
 }
 
-def:pub run_pipeline_for_professor(professor_id: str) -> PipelineResult {
+def:priv run_pipeline_for_professor(professor_id: str) -> PipelineResult {
+    require_staff();
     p = find_professor(professor_id);
     if p is None { return PipelineResult(ok=False, message="Professor not found."); }
     inst = institution_of(p);
