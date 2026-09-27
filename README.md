@@ -1,5 +1,5 @@
 # Road to Research
-**Live on : https://preview-jac-sbx-38b138156c9546d881e84ebecc5fd447.jachammer.app/
+Live on : https://preview-jac-sbx-38b138156c9546d881e84ebecc5fd447.jachammer.app/
 
 **Helping students find professors, understand their recent research, discover funding, and identify current research opportunities in one place.**
 
