@@ -85,6 +85,11 @@ og_site_name = "Blank canvas"
 
 
 [scale]
+[scale.database]
+# Set MONGODB_URI in Settings > Environment to keep data outside the preview sandbox.
+# Empty = local SQLite in .jac/data (wiped when the sandbox is replaced).
+mongodb_uri = "${MONGODB_URI:-}"
+
 [scale.microservices]
 enabled = false
 
