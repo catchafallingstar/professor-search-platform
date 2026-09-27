@@ -146,6 +146,17 @@ def ensure_owner_account():
         print(f"[auth] owner account already present or not created ({str(e)[:80]}).")
 
 
+def _accounts_backup_loop():
+    """Copy new sign-ups to MongoDB every 2 minutes (see services/accounts_mirror.py)."""
+    from services import accounts_mirror as am
+    while True:
+        try:
+            am.backup()
+        except Exception as e:
+            print(f"[auth] account backup failed: {e}")
+        time.sleep(120)
+
+
 def restore_then_resume():
     """On server boot: recreate the owner account, restore the saved directory into the
     (possibly empty) graph, re-index, queue the priority universities and start the worker.
@@ -158,9 +169,15 @@ def restore_then_resume():
             time.sleep(2)
         time.sleep(8)                # the account system finishes initialising after /healthz answers
         try:
+            from services import accounts_mirror as am
+            print(f"[auth] restored {am.restore()} accounts from MongoDB.")
+        except Exception as e:
+            print(f"[auth] account restore skipped: {e}")
+        try:
             ensure_owner_account()
         except Exception as e:
             print(f"[auth] owner bootstrap failed: {e}")
+        threading.Thread(target=_accounts_backup_loop, daemon=True).start()
         autostart = os.environ.get("PIPELINE_AUTOSTART", "1").strip() not in ("0", "false", "no")
         actions = ("restore", "reindex", "load_priority") if autostart else ("restore", "reindex")
         for action in actions:

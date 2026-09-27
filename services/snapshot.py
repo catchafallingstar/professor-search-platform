@@ -32,7 +32,62 @@ def _remote_url():
     return os.environ.get("DIRECTORY_SNAPSHOT_URL", "").strip()
 
 
+# ---- MongoDB copy (DIRECTORY_MONGODB_URI) ----
+# The app's own database stays local (Jac's built-in Mongo mode breaks guest requests in
+# this release), and the whole directory is mirrored into MongoDB as compressed chunks:
+# db "professor_atlas", collection "directory_snapshot". Survives any sandbox reset.
+_CHUNK = 8 * 1024 * 1024
+
+
+def _mongo_col():
+    uri = os.environ.get("DIRECTORY_MONGODB_URI", "").strip()
+    if not uri:
+        return None
+    try:
+        from pymongo import MongoClient
+        return MongoClient(uri, serverSelectionTimeoutMS=15000)["professor_atlas"]["directory_snapshot"]
+    except Exception as e:
+        print(f"[snapshot] mongo unavailable: {e}")
+        return None
+
+
+def _mongo_put(body):
+    col = _mongo_col()
+    if col is None:
+        return
+    try:
+        import zlib
+        data = zlib.compress(body, 6)
+        parts = [data[i:i + _CHUNK] for i in range(0, len(data), _CHUNK)] or [b""]
+        gen = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+        col.insert_many([{"gen": gen, "n": i, "of": len(parts), "data": p} for i, p in enumerate(parts)])
+        col.delete_many({"gen": {"$ne": gen}})   # keep only the newest complete copy
+    except Exception as e:
+        print(f"[snapshot] mongo save failed: {e}")
+
+
+def _mongo_get():
+    col = _mongo_col()
+    if col is None:
+        return None
+    try:
+        import zlib
+        head = col.find_one({"n": 0}, sort=[("gen", -1)])
+        if not head:
+            return None
+        parts = list(col.find({"gen": head["gen"]}).sort("n", 1))
+        if len(parts) != head["of"]:
+            return None
+        return json.loads(zlib.decompress(b"".join(p["data"] for p in parts)).decode("utf-8"))
+    except Exception as e:
+        print(f"[snapshot] mongo load failed: {e}")
+        return None
+
+
 def _remote_get():
+    m = _mongo_get()
+    if m is not None:
+        return m
     url = _remote_url()
     if not url:
         return None
@@ -46,6 +101,7 @@ def _remote_get():
 
 
 def _remote_put(body):
+    _mongo_put(body)
     url = _remote_url()
     if not url:
         return

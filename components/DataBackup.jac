@@ -7,7 +7,9 @@ sv import from ..services.queue { download_snapshot, upload_snapshot, snapshot_i
 def:pub DataBackup() -> JsxElement {
     has info: str = "",
         busy: bool = False,
-        message: str = "";
+        message: str = "",
+        file_url: str = "",
+        file_name: str = "";
 
     async def refresh() -> None {
         try {
@@ -17,26 +19,26 @@ def:pub DataBackup() -> JsxElement {
     }
 
     async def save_backup() -> None {
+        # Building the file can take a while, and browsers drop a download that is
+        # triggered after a long wait (no longer tied to the click). So prepare the file,
+        # then show a real "Save" link the user clicks. Also works inside the IDE frame.
         busy = True;
-        message = "";
+        message = "Preparing backup...";
         body: str = "";
         try {
             body = await download_snapshot();
-        } except Exception as e { message = str(e); }
+        } except Exception as e { message = "Backup failed: " + str(e); }
         busy = False;
         if not body {
-            message = message or "Nothing to download yet.";
+            message = message if message.startswith("Backup failed") else "Nothing to download yet.";
             return;
         }
+        if file_url { URL.revokeObjectURL(file_url); }  # jac:ignore[E1032]
         blob: any = new(Blob, [body], {"type": "application/json"});  # jac:ignore[E1053]
-        url: any = URL.createObjectURL(blob);  # jac:ignore[E1032]
-        link: any = document.createElement("a");
         stamp: any = new(Date).toISOString();  # jac:ignore[E1053]
-        link.setAttribute("href", url);
-        link.setAttribute("download", "professor-atlas-" + str(stamp)[:10] + ".json");
-        link.click();
-        URL.revokeObjectURL(url);  # jac:ignore[E1032]
-        message = "Downloaded. Keep this file; you can upload it to restore everything.";
+        file_url = URL.createObjectURL(blob);  # jac:ignore[E1032]
+        file_name = "professor-atlas-" + str(stamp)[:16].replace(":", "-") + ".json";
+        message = f"Backup ready ({int(len(body) / 1024)} KB). Click Save file. If nothing happens, open the preview in its own tab first.";
         await refresh();
     }
 
@@ -69,8 +71,12 @@ def:pub DataBackup() -> JsxElement {
             <p className="text-sm">{info or "Checking backup..."}</p>
             <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={save_backup} disabled={busy}>
-                    <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />{"Download backup"}
+                    <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />{"Prepare backup" if not busy else "Preparing..."}
                 </Button>
+                {file_url and <a href={file_url} download={file_name} target="_blank" rel="noopener"
+                    className="inline-flex items-center gap-2 rounded-md bg-primary pt-2 pb-2 pl-3 pr-3 text-sm font-medium text-primary-foreground hover:opacity-90">
+                    <HugeiconsIcon icon={Download01Icon} strokeWidth={2} className="size-4" />{"Save file"}
+                </a>}
                 <label className={"inline-flex cursor-pointer items-center gap-2 rounded-md border pt-2 pb-2 pl-3 pr-3 text-sm font-medium transition-colors hover:bg-muted " + ("pointer-events-none opacity-50" if busy else "")}>
                     <HugeiconsIcon icon={Upload01Icon} strokeWidth={2} className="size-4" />{"Restore from file"}
                     <input type="file" accept="application/json,.json" className="hidden" onChange={upload_file} />
