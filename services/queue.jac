@@ -6,6 +6,7 @@ does one small unit of work; the background worker thread and the admin page
 both call it.
 """
 
+import os;
 import threading;
 import time;
 import from services.models {
@@ -203,7 +204,7 @@ def _step_institution(inst: Institution) -> str {
         return f"{inst.name}: all professors processed (incl. hiring)";
     }
     if inst.pipeline_state == "UNIVERSITY_AWARDS" {
-        extra = institution_awards(inst);
+        extra = institution_awards(inst) if os.environ.get("GRANTS_ENABLED", "0") == "1" else 0;
         inst.pipeline_state = "DONE";
         inst.pipeline_note = f"{extra} extra grant links from institution-wide awards.";
         return f"{inst.name}: done";
@@ -396,14 +397,17 @@ def:pub internal_action(worker_token: str = "", action: str = "", arg: str = "")
     }
     if action == "reindex" {
         # Backfill search text + research fields for professors stored before search was widened.
+        # Only professors missing their search text (e.g. just restored); cheap on a normal boot.
         n = 0;
         for inst in _queue() {
             for p in [inst ->:HasProfessor:->] {
-                refresh_professor_cache(p);
-                n += 1;
+                if not p.search_text {
+                    refresh_professor_cache(p);
+                    n += 1;
+                }
             }
         }
-        export_directory(True);
+        if n > 0 { export_directory(True); }
         return StepResult(message=f"Re-indexed {n} professors for search.");
     }
     if action == "recrawl_all" {

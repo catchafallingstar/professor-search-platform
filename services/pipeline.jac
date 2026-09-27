@@ -16,6 +16,7 @@ import from services.openalex {
 }
 import from services.hiring { HiringResearch, research_hiring }
 import from services.access { require_staff, check_worker_token }
+import os;
 import services.fetchers as fx;
 import from services.crawler { fetch_page, find_hiring_quote, quote_on_page, llm_ready }
 
@@ -405,7 +406,12 @@ def process_professor(p: Professor, inst: Institution) -> str {
     match_professor(p, inst);
     grants = 0;
     if p.openalex_author_id {
-        grants = discover_grants(p, inst, ingest_works(p));
+        award_ids = ingest_works(p);
+        # Grants are paused (GRANTS_ENABLED=1 in .env turns them back on): each award is one
+        # more OpenAlex call per professor and they were slowing the whole pipeline down.
+        if os.environ.get("GRANTS_ENABLED", "0") == "1" {
+            grants = discover_grants(p, inst, award_ids);
+        }
     }
     # Hiring research needs an LLM key; without one we leave it unchecked (never "not hiring").
     if llm_ready() {

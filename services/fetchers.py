@@ -161,7 +161,13 @@ def restore_then_resume():
     """On server boot: recreate the owner account, restore the saved directory into the
     (possibly empty) graph, re-index, queue the priority universities and start the worker.
     Nobody has to sign in for the pipeline to resume after a sandbox reset.
-    Set PIPELINE_AUTOSTART=0 to keep the worker stopped on boot."""
+    Set PIPELINE_AUTOSTART=0 to keep the worker stopped on boot.
+    Runs once per server process: hot reloads re-execute the Jac entry block, and stacked
+    boot routines (each re-indexing every professor) starved search of CPU."""
+    if WORKER.get("booted"):
+        return
+    WORKER["booted"] = True
+
     def _go():
         for _ in range(60):          # wait for the API to come up (max ~2 min)
             if _local_api():
