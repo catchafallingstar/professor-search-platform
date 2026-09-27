@@ -173,27 +173,49 @@ def match_professor(p: Professor, inst: Institution) -> None {
 
 # ---------- papers ----------
 
-def upsert_subfield(data: DataRoot, sid: str, name: str, field_name: str = "") -> Subfield {
-    for s in [data ->:HasSubfieldIndex:->] {
-        if (sid and s.openalex_subfield_id == sid) or (not sid and s.name == name) {
-            if field_name and not s.field_name { s.field_name = field_name; }
-            return s;
+# In-memory id -> jid lookup tables. Without them every stored paper / grant / subfield was
+# re-scanned for EACH new one (quadratic): with thousands of papers one professor took
+# minutes, the worker timed out and matching looked stuck. Built once per process.
+glob _IDX: dict = {"paper": None, "grant": None, "sub": None};
+
+def _index(kind: str, data: DataRoot) -> dict {
+    if _IDX[kind] is None {
+        m: dict = {};
+        if kind == "paper" {
+            for x in [data ->:HasPaperIndex:->] { m[x.openalex_work_id] = jid(x); }
+        } elif kind == "grant" {
+            for g in [data ->:HasGrantIndex:->] { m[g.openalex_award_id] = jid(g); }
+        } else {
+            for s in [data ->:HasSubfieldIndex:->] { m[s.openalex_subfield_id or ("name:" + s.name)] = jid(s); }
         }
+        _IDX[kind] = m;
+    }
+    return _IDX[kind];
+}
+
+def upsert_subfield(data: DataRoot, sid: str, name: str, field_name: str = "") -> Subfield {
+    idx = _index("sub", data);
+    key = sid or ("name:" + name);
+    found = jobj(idx[key]) if key in idx else None;
+    if isinstance(found, Subfield) {
+        if field_name and not found.field_name { found.field_name = field_name; }
+        return found;
     }
     s = Subfield(openalex_subfield_id=sid, name=name, field_name=field_name);
     data +>:HasSubfieldIndex():+> s;
+    idx[key] = jid(s);
     return s;
 }
 
 def _upsert_paper(data: DataRoot, w: dict) -> Paper {
     wid = short_id(_s(w, "id"));
-    paper: Paper | None = None;
-    for x in [data ->:HasPaperIndex:->] {
-        if x.openalex_work_id == wid { paper = x; break; }
-    }
+    idx = _index("paper", data);
+    found = jobj(idx[wid]) if wid in idx else None;
+    paper: Paper | None = found if isinstance(found, Paper) else None;
     if paper is None {
         paper = Paper(openalex_work_id=wid, created_at=now_iso());
         data +>:HasPaperIndex():+> paper;
+        idx[wid] = jid(paper);
     }
     loc = w.get("primary_location", {}) or {};
     doi = _s(w, "doi");
@@ -256,13 +278,13 @@ def _person_name(person: dict) -> str {
 
 def _upsert_grant(data: DataRoot, award: dict) -> Grant {
     aid = short_id(_s(award, "id"));
-    grant: Grant | None = None;
-    for g in [data ->:HasGrantIndex:->] {
-        if g.openalex_award_id == aid { grant = g; break; }
-    }
+    idx = _index("grant", data);
+    found = jobj(idx[aid]) if aid in idx else None;
+    grant: Grant | None = found if isinstance(found, Grant) else None;
     if grant is None {
         grant = Grant(openalex_award_id=aid, created_at=now_iso());
         data +>:HasGrantIndex():+> grant;
+        idx[aid] = jid(grant);
     }
     amt = award.get("amount");
     grant.title = _s(award, "display_name");

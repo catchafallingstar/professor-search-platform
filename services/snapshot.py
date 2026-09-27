@@ -113,6 +113,11 @@ def _remote_put(body):
         print(f"[snapshot] remote save failed: {e}")
 
 
+def due(min_interval=900.0):
+    """True when the throttled snapshot should run (checked BEFORE walking the graph)."""
+    return time.time() - _LAST_SAVE["t"] >= min_interval
+
+
 def exists():
     return os.path.exists(PATH) and os.path.getsize(PATH) > 20
 
@@ -126,7 +131,7 @@ def load():
     return _remote_get()
 
 
-def save(payload, force=False, min_interval=20.0):
+def save(payload, force=False, min_interval=900.0):
     """Atomic write (tmp file + rename) so a crash never leaves a half-written snapshot.
     Throttled to at most once every `min_interval` seconds unless force=True."""
     now = time.time()

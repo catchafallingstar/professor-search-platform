@@ -22,6 +22,7 @@ import from services.pipeline { resolve_institution, process_professor, institut
 import from services.persist { export_directory, restore_directory }
 import services.universities as unis;
 import services.fetchers as fx;
+import services.snapshot as snap;
 import from services.access { require_staff, worker_token, check_worker_token }
 
 glob PRIORITY: list[dict] = unis.PRIORITY as list[dict],
@@ -537,7 +538,9 @@ def _run_step() -> StepResult {
     fx.clear_rate_notice();
     _log(r.message);
     try {
-        export_directory(False);   # throttled; keeps data/directory.json current
+        # Walking all ~2000 professors takes minutes here, so only every 15 min (the
+        # step itself used to time out waiting for this). snapshot.LAST_SAVE gates it.
+        if bool(snap.due()) { export_directory(True); }
     } except Exception as e {
         print(f"[persist] snapshot failed: {str(e)[:200]}");
     }
