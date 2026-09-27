@@ -118,7 +118,7 @@ def:pub PipelineAdmin() -> JsxElement {
             </div>
             <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={step} disabled={busy or running or len(rows) == 0}>{"Run one step"}</Button>
-                <Button className="shadow-sm" onClick={toggle} disabled={busy or len(rows) == 0}>
+                <Button className="shadow-sm" onClick={toggle} disabled={busy}>
                     {busy and <Spinner />}{"Pause auto-processing" if running else "Start auto-processing"}
                 </Button>
             </div>
