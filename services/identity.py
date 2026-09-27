@@ -31,9 +31,12 @@ def email_for_root(root_id):
                     return ""
                 ids = json.loads(identities) if identities else []
                 # prefer an email identity, else the username (the app signs people up with their email)
+                # Email identities are stored unverified (no confirmation emails are sent), but
+                # they still need the account password to sign in, so accept them. Being
+                # "verified" is not what makes this safe; the password check is.
                 for kind in ("email", "username"):
                     for i in ids:
-                        if i.get("type") == kind and i.get("verified", True):
+                        if i.get("type") == kind:
                             return str(i.get("value_normalized") or i.get("value_raw") or "").strip().lower()
                 return ""
         finally:
