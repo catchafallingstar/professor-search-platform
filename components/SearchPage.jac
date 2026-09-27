@@ -52,6 +52,8 @@ def:pub ResultCard(p: ProfessorSummary) -> JsxElement {
     </Link>;
 }
 
+glob _search_seq: int = 0;
+
 def:pub SearchPage() -> JsxElement {
     has results: list[ProfessorSummary] = [],
         options: FilterOptions | None = None,
@@ -65,6 +67,11 @@ def:pub SearchPage() -> JsxElement {
         error: str = "";
 
     async def run_search(q: str, u: str, d: str, s: str, g: bool, h: bool) -> None {
+        # Each call gets a ticket; only the newest call may write results. Without this,
+        # a slower earlier request (e.g. for "mi" while typing "michigan") can land last
+        # and overwrite the correct results.
+        _search_seq = _search_seq + 1;
+        ticket = _search_seq;
         loading = True;
         error = "";
         # The API server can still be starting right after a preview restart; retry briefly.
@@ -72,6 +79,7 @@ def:pub SearchPage() -> JsxElement {
         for attempt in range(4) {
             try {
                 found = await search_professors(q, u, d, s, g, h);
+                if ticket != _search_seq { return; }   # a newer search has started
                 results = found;
                 loading = False;
                 if jacIsLoggedIn() {
