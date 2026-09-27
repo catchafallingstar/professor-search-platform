@@ -9,7 +9,7 @@ import services.snapshot as snap;
 import from services.models {
     DataRoot, Institution, Professor, FacultyPublicationAnchor, Paper, Subfield, Grant,
     HiringSignal, HasInstitution, HasProfessor, HasAnchor, Authored, HasSubfield, HasGrant,
-    HasHiringSignal, HasSubfieldIndex, HasPaperIndex, HasGrantIndex, get_data_root
+    HasHiringSignal, HasSubfieldIndex, HasPaperIndex, HasGrantIndex, get_data_root, normalize_name
 }
 import from services.pipeline { upsert_subfield, refresh_professor_cache }
 import from services.access { _registry }
@@ -153,7 +153,25 @@ def restore_directory() -> str {
                 _apply(sig, hd, HIRING_FIELDS);
                 p +>:HasHiringSignal():+> sig;
             }
-            refresh_professor_cache(p);
+            # Cheap cache fill from the snapshot data (no graph walks per professor; the old
+            # refresh_professor_cache call here made restoring ~2000 professors take many minutes).
+            subs: list[str] = [];
+            flds: list[str] = [];
+            for pd in (pr.get("papers", []) or []) {
+                for s in (pd.get("subfields", []) or []) {
+                    sn = str(s.get("name", "") or "");
+                    fn = str(s.get("field", "") or "");
+                    if sn and sn not in subs { subs.append(sn); }
+                    if fn and fn not in flds { flds.append(fn); }
+                }
+            }
+            subs.sort();
+            flds.sort();
+            p.cached_subfields = subs;
+            p.cached_fields = flds;
+            p.cached_grant_count = len(pr.get("grants", []) or []);
+            p.cached_has_hiring = isinstance(hd, dict) and bool(hd.get("quote"));
+            p.search_text = normalize_name(" | ".join([p.name, p.title, p.department, inst.name] + flds + subs));
         }
     }
     return f"Restored {n_i} universities and {n_p} professors from the saved snapshot.";

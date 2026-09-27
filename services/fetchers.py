@@ -177,6 +177,7 @@ def restore_then_resume():
         try:
             from services import accounts_mirror as am
             print(f"[auth] restored {am.restore()} accounts from MongoDB.")
+            print(f"[auth] repaired {am.repair_roots()} missing user roots.")
         except Exception as e:
             print(f"[auth] account restore skipped: {e}")
         try:
