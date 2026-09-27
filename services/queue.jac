@@ -18,7 +18,7 @@ import from services.openalex { list_top_us_institutions, short_id }
 import from services.crawler {
     PageData, fetch_page, extract_faculty, extract_profile, guess_directories, same_domain
 }
-import from services.pipeline { resolve_institution, process_professor, institution_awards, refresh_professor_cache }
+import from services.pipeline { resolve_institution, process_professor, institution_awards, refresh_professor_cache, discover_grants, ingest_works }
 import from services.persist { export_directory, restore_directory }
 import services.universities as unis;
 import services.fetchers as fx;
@@ -422,6 +422,32 @@ def:pub internal_action(worker_token: str = "", action: str = "", arg: str = "")
             }
         }
         msg = f"Re-crawling faculty directories for {n} universities (per-department limit {MAX_PROFESSORS_PER_DEPARTMENT}).";
+        _log(msg);
+        return StepResult(message=msg);
+    }
+    if action == "grant_check" {
+        # One-off grant pass (grants are off in the automatic pipeline). For every MATCHED
+        # professor: re-read recent works for award ids, fetch each award, link only when the
+        # professor is listed as PI / Co-PI / investigator. arg = max professors (default 25).
+        limit = int(arg) if arg.isdigit() else 25;
+        done = 0; linked = 0;
+        for inst in _queue() {
+            for p in [inst ->:HasProfessor:->] {
+                if done >= limit { break; }
+                if p.match_status != "MATCHED" or not p.openalex_author_id or p.last_grant_update { continue; }
+                try {
+                    linked += discover_grants(p, inst, ingest_works(p));
+                } except fx.RateLimited {
+                    return StepResult(ok=False, message=f"Rate limited after {done} professors ({linked} grants linked). Run again later.");
+                }
+                p.last_grant_update = p.last_grant_update or now_iso();
+                refresh_professor_cache(p);
+                done += 1;
+            }
+            _recount(inst);
+        }
+        export_directory(True);
+        msg = f"Grant check: {done} professors checked, {linked} grants linked.";
         _log(msg);
         return StepResult(message=msg);
     }
