@@ -145,7 +145,7 @@ def:pub SearchPage() -> JsxElement {
     depts: list[str] = options.departments if options else [];
     subs: list[str] = options.subfields if options else [];
     flds: list[str] = options.fields if options else [];
-    count_label = "1 professor" if total == 1 else str(total) + " professors";
+    count_label = "Searching..." if loading else ("1 professor" if total == 1 else str(total) + " professors");
 
     return <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 pt-8 pb-12 pl-6 pr-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
         <div className="flex flex-col gap-1">

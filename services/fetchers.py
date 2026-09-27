@@ -56,10 +56,23 @@ def _local_api():
 _RUN_FLAG = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".worker_running")
 
 
+LAST_SEARCH = {"t": 0.0}
+
+
+def note_search():
+    """Called by the search endpoint: the worker pauses so visitors are served first."""
+    LAST_SEARCH["t"] = time.time()
+
+
 def _worker_loop():
     base = None
     time.sleep(5)
     while WORKER["running"]:
+        # The worker and the website share one server process. Give searches the CPU:
+        # hold off while anyone searched in the last 30 s, and rest 3 s between steps.
+        while time.time() - LAST_SEARCH["t"] < 30 and WORKER["running"]:
+            time.sleep(2)
+        time.sleep(3)
         base = base or _local_api()
         if not base:
             time.sleep(5)

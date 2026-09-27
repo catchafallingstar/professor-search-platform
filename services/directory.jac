@@ -1,5 +1,6 @@
 """Read endpoints: professor search, filter options, and full profile."""
 
+import services.fetchers as fx;
 import from services.models {
     DataRoot, Institution, Professor, FacultyPublicationAnchor, Paper, Subfield,
     Grant, HiringSignal, HasInstitution, HasProfessor, HasAnchor, Authored,
@@ -181,7 +182,7 @@ glob _SEARCH_CACHE: dict = {"t": 0.0, "rows": []};
 def _search_rows() -> list {
     import time;
     now = time.time();
-    if now - float(_SEARCH_CACHE["t"]) < 60 and len(_SEARCH_CACHE["rows"]) > 0 {
+    if now - float(_SEARCH_CACHE["t"]) < 600 and len(_SEARCH_CACHE["rows"]) > 0 {
         return _SEARCH_CACHE["rows"];
     }
     rows: list = [];
@@ -217,6 +218,7 @@ def:pub search_professors_page(
     limit: int = 50
 ) -> SearchResults {
     # One page of results (the Search page loads 50, then 20 more per "Load more").
+    fx.note_search();   # background pipeline pauses while people are searching
     has_grant = has_grant is True or str(has_grant).lower() == "true";
     has_hiring = has_hiring is True or str(has_hiring).lower() == "true";
     words = [w for w in normalize_name(query).split() if w];
