@@ -111,5 +111,56 @@ EXTRA_DIRS = {
     "193900": [["Computer Science", "https://cs.nyu.edu/dynamic/people/faculty/"]],
 }
 
+# More department directories, verified with services/probe_dirs.py (each parsed 5+ professors).
+EXTRA_DIRS.update({
+    "243780": [  # Purdue (Computer Science is already in PRIORITY)
+        ["Electrical and Computer Engineering", "https://engineering.purdue.edu/ECE/People/Faculty"],
+        ["Mechanical Engineering", "https://engineering.purdue.edu/ME/People/Faculty"],
+        ["Aeronautics and Astronautics", "https://engineering.purdue.edu/AAE/people/faculty"],
+        ["Chemical Engineering", "https://engineering.purdue.edu/ChE/people/faculty"],
+        ["Civil Engineering", "https://engineering.purdue.edu/CE/People/Faculty"],
+        ["Industrial Engineering", "https://engineering.purdue.edu/IE/people/faculty"],
+        ["Biomedical Engineering", "https://engineering.purdue.edu/BME/People/Faculty"],
+        ["Materials Engineering", "https://engineering.purdue.edu/MSE/people/faculty"],
+        ["Mathematics", "https://www.math.purdue.edu/people/faculty.html"],
+        ["Statistics", "https://www.stat.purdue.edu/people/faculty/"],
+        ["Chemistry", "https://www.chem.purdue.edu/people/faculty/index.html"],
+    ],
+    "145637": [  # UIUC (Computer Science already listed)
+        ["Electrical and Computer Engineering", "https://ece.illinois.edu/about/directory/faculty"],
+        ["Mechanical Science and Engineering", "https://mechse.illinois.edu/people/faculty"],
+        ["Aerospace Engineering", "https://aerospace.illinois.edu/directory/faculty"],
+        ["Civil and Environmental Engineering", "https://cee.illinois.edu/directory/faculty"],
+        ["Bioengineering", "https://bioengineering.illinois.edu/directory/faculty"],
+        ["Statistics", "https://stat.illinois.edu/directory/faculty"],
+        ["Mathematics", "https://math.illinois.edu/directory/faculty"],
+        ["Physics", "https://physics.illinois.edu/people/directory/faculty"],
+    ],
+    "147767": [  # Northwestern (Computer Science already listed)
+        ["Mechanical Engineering", "https://www.mccormick.northwestern.edu/mechanical/people/faculty/"],
+        ["Biomedical Engineering", "https://www.mccormick.northwestern.edu/biomedical/people/faculty/"],
+        ["Chemical and Biological Engineering", "https://www.mccormick.northwestern.edu/chemical-biological/people/faculty/"],
+        ["Civil and Environmental Engineering", "https://www.mccormick.northwestern.edu/civil-environmental/people/faculty/"],
+        ["Industrial Engineering and Management Sciences", "https://www.mccormick.northwestern.edu/industrial/people/faculty/"],
+        ["Materials Science and Engineering", "https://www.mccormick.northwestern.edu/materials-science/people/faculty/"],
+    ],
+    "174066": [  # Minnesota (Computer Science already listed)
+        ["Mechanical Engineering", "https://cse.umn.edu/me/faculty"],
+        ["Biomedical Engineering", "https://cse.umn.edu/bme/faculty"],
+        ["Industrial and Systems Engineering", "https://cse.umn.edu/isye/faculty"],
+        ["Mathematics", "https://cse.umn.edu/math/faculty"],
+    ],
+    "171128": [  # Michigan Tech (Computer Science already listed)
+        ["Electrical and Computer Engineering", "https://www.mtu.edu/ece/department/faculty/"],
+        ["Mechanical Engineering", "https://www.mtu.edu/mechanical/department/faculty/"],
+        ["Chemical Engineering", "https://www.mtu.edu/chemical/department/faculty/"],
+        ["Materials Science and Engineering", "https://www.mtu.edu/materials/department/faculty/"],
+        ["Biomedical Engineering", "https://www.mtu.edu/biomedical/department/faculty/"],
+        ["Mathematical Sciences", "https://www.mtu.edu/math/department/faculty/"],
+        ["Physics", "https://www.mtu.edu/physics/department/faculty/"],
+    ],
+})
+
 for _row in PRIORITY:
-    _row["dirs"] = _row["dirs"] + EXTRA_DIRS.get(_row["ipeds"], [])
+    _have = {u for _, u in _row["dirs"]}
+    _row["dirs"] = _row["dirs"] + [d for d in EXTRA_DIRS.get(_row["ipeds"], []) if d[1] not in _have]

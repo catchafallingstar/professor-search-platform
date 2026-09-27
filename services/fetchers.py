@@ -374,11 +374,31 @@ def _title_near(text, start, end):
     return m.group(1).strip() if m else ""
 
 
+_DEPT_WORDS = re.compile(r"engineering|science|sciences|mathemat|statistic|physics|chemistry|biology|economics|psychology|computing|informatics|information|robotics|medicine|design|studies", re.I)
+
+
+def _dept_near(text, end):
+    """On college-wide directories the department is a link right after the title
+    (e.g. MSU: '[Name](..) Associate Professor [Biomedical Engineering](.../departments/bme)')."""
+    after = text[end:end + 260]
+    for m in _LINK_RE.finditer(after):
+        label = " ".join(m.group(1).split())
+        if 3 <= len(label) <= 80 and _DEPT_WORDS.search(label) and not re.search(r"@|\d{3}", label):
+            return label
+        break  # only the first link after the title is considered
+    return ""
+
+
 def extract_faculty_rules(page, department):
-    """Pull professor-rank faculty from an official directory page: linked names + nearby titles."""
+    """Pull professor-rank faculty from an official directory page: linked names + nearby titles.
+
+    `department` is the directory's label. For college-wide directories (label starting with
+    "College of"/"School of") the per-person department link is used when present.
+    """
     if not page.get("ok"):
         return []
     text = page["text"]
+    college_wide = bool(re.match(r"(college|school|faculty) of", department or "", re.I))
     out, seen = [], set()
     for m in _LINK_RE.finditer(text):
         label, url = m.group(1).strip(), m.group(2)
@@ -400,8 +420,11 @@ def extract_faculty_rules(page, department):
         seen.add(key)
         # Keep the rank only (drop trailing campus names etc.)
         rank = re.match(r"((?:Distinguished |Endowed |University |Collegiate |Full |Associate |Assistant )*Professor)", title, re.I)
+        dept = department
+        if college_wide:
+            dept = _dept_near(text, m.end()) or department
         out.append({"name": name, "title": (rank.group(1) if rank else title)[:80],
-                    "department": department, "profile_url": url})
+                    "department": dept, "profile_url": url})
     return out
 
 

@@ -71,7 +71,7 @@ obj WorkerState {
         log: list[str] = [];
 }
 
-glob MAX_PROFESSORS_PER_INSTITUTION: int = 60,
+glob MAX_PROFESSORS_PER_DEPARTMENT: int = 60,
      FINISHED: list[str] = ["DONE", "NO_FACULTY_FOUND", "FAILED"],
      WORKER: WorkerState = WorkerState();
 
@@ -125,23 +125,31 @@ def _dirs_for(inst: Institution) -> list[list[str]] {
 }
 
 def _crawl_faculty(inst: Institution) -> int {
-    existing = [p.normalized_name for p in [inst ->:HasProfessor:->]];
+    # Up to MAX_PROFESSORS_PER_DEPARTMENT per department (department = the directory's
+    # department label), so large universities with many majors are covered.
+    profs = [inst ->:HasProfessor:->];
+    existing = [p.normalized_name for p in profs];
+    per_dept: dict = {};
+    for p in profs {
+        per_dept[p.department] = int(per_dept.get(p.department, 0)) + 1;
+    }
     added = 0;
     ts = now_iso();
     for d in _dirs_for(inst) {
-        if len(existing) >= MAX_PROFESSORS_PER_INSTITUTION { break; }
         page = fetch_page(d[1]);
         if not page.ok { continue; }
         for f in extract_faculty(page, d[0]) {
             nn = normalize_name(f.name);
-            if nn in existing or len(existing) >= MAX_PROFESSORS_PER_INSTITUTION { continue; }
+            dept = f.department or d[0];
+            if nn in existing or int(per_dept.get(dept, 0)) >= MAX_PROFESSORS_PER_DEPARTMENT { continue; }
             p = Professor(
                 name=f.name.strip(), normalized_name=nn, title=f.title or "Professor",
-                department=f.department or d[0], institution_id=jid(inst),
+                department=dept, institution_id=jid(inst),
                 faculty_url=f.profile_url or page.url, created_at=ts, updated_at=ts
             );
             inst +>:HasProfessor():+> p;
             existing.append(nn);
+            per_dept[dept] = int(per_dept.get(dept, 0)) + 1;
             added += 1;
         }
     }
@@ -372,6 +380,21 @@ def:pub internal_action(worker_token: str = "", action: str = "", arg: str = "")
             }
         }
         msg = f"Re-queued {n} universities for another faculty crawl.";
+        _log(msg);
+        return StepResult(message=msg);
+    }
+    if action == "recrawl_all" {
+        # Picks up newly added department directories / the per-department limit.
+        # Existing professors keep their results; only new ones get processed.
+        n = 0;
+        for inst in _queue() {
+            if inst.pipeline_state in ["PROCESSING", "UNIVERSITY_AWARDS", "DONE", "NO_FACULTY_FOUND"] {
+                inst.pipeline_state = "CRAWLING";
+                inst.pipeline_note = "";
+                n += 1;
+            }
+        }
+        msg = f"Re-crawling faculty directories for {n} universities (per-department limit {MAX_PROFESSORS_PER_DEPARTMENT}).";
         _log(msg);
         return StepResult(message=msg);
     }
