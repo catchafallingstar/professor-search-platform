@@ -11,6 +11,9 @@ import from .ui.skeleton { Skeleton }
 import from .ui.spinner { Spinner }
 sv import from ..services.directory { get_professor_profile, ProfessorDetail, PaperView, GrantView }
 sv import from ..services.pipeline { run_pipeline_for_professor, PipelineResult }
+sv import from ..services.history { record_view }
+import from "@jac/runtime" { jacIsLoggedIn }
+import from .AuthContext { useAuth }
 
 def fmt_amount(amount: float, currency: str) -> str {
     whole = str(int(amount));
@@ -78,7 +81,11 @@ def:pub ProfilePage() -> JsxElement {
             # Check the fetched value, not f"prof": state updates land on the next render.
             fetched = await get_professor_profile(pid);
             prof = fetched;
-            if fetched is None { error = "Professor not found."; }
+            if fetched is None {
+                error = "Professor not found.";
+            } elif jacIsLoggedIn() {
+                try { await record_view(pid, fetched.name, fetched.university, fetched.department); } except Exception {}
+            }
         } except Exception as e {
             error = "Could not load this profile: " + str(e);
         }
@@ -99,6 +106,10 @@ def:pub ProfilePage() -> JsxElement {
     }
 
     async can with entry { await load(); }
+
+    auth = useAuth();
+    who: any = auth["me"];
+    is_staff: bool = bool(who and who.is_staff);
 
     back = <Link to="/" className="flex w-fit items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground">
         <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-4 rotate-180" />{"All professors"}
@@ -140,12 +151,12 @@ def:pub ProfilePage() -> JsxElement {
                     {p.lab_url and <a href={p.lab_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-primary underline-offset-4 hover:underline">{"Lab Website"}<HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={2} className="size-3.5" /></a>}
                 </div>
             </div>
-            <div className="flex flex-col items-end gap-2">
+            {is_staff and <div className="flex flex-col items-end gap-2">
                 <Button className="shadow-sm" onClick={run_pipeline} disabled={running}>
-                    {running and <Spinner />}{"Running pipeline" if running else "Run pipeline"}
+                    {running and <Spinner />}{"Running pipeline" if running else "Re-run pipeline (staff)"}
                 </Button>
                 {run_message and <span className="max-w-xs text-right text-xs text-muted-foreground">{run_message}</span>}
-            </div>
+            </div>}
         </div>
 
         <div className="grid gap-6 lg:grid-cols-3">

@@ -13,6 +13,8 @@ import from .ui.empty { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescrip
 sv import from ..services.directory {
     search_professors, get_filter_options, ProfessorSummary, FilterOptions
 }
+sv import from ..services.history { record_search }
+import from "@jac/runtime" { useLocation, jacIsLoggedIn }
 
 def:pub ResultCard(p: ProfessorSummary) -> JsxElement {
     grants_label = "1 grant" if p.grant_count == 1 else str(p.grant_count) + " grants";
@@ -63,10 +65,16 @@ def:pub SearchPage() -> JsxElement {
         loading = True;
         error = "";
         # The API server can still be starting right after a preview restart; retry briefly.
+        found: list[ProfessorSummary] = [];
         for attempt in range(4) {
             try {
-                results = await search_professors(q, u, d, s, g, h);
+                found = await search_professors(q, u, d, s, g, h);
+                results = found;
                 loading = False;
+                if jacIsLoggedIn() {
+                    # Saved to the signed-in user's own history (server collapses keystroke-by-keystroke typing).
+                    try { await record_search(q, u, d, s, g, h, len(found)); } except Exception {}
+                }
                 return;
             } except Exception {
                 await new(Promise, lambda (resolve: any) { setTimeout(resolve, 1500 * (attempt + 1)); });
@@ -76,8 +84,19 @@ def:pub SearchPage() -> JsxElement {
         loading = False;
     }
 
+    loc = useLocation();
+
     async can with entry {
-        await run_search("", "", "", "", False, False);
+        # Prefill from the URL, e.g. when re-running a search from account history.
+        p: any = new(URLSearchParams, loc.search);
+        q0: str = p.get("q") or "";
+        u0: str = p.get("university") or "";
+        d0: str = p.get("department") or "";
+        s0: str = p.get("subfield") or "";
+        g0: bool = p.get("grant") == "1";
+        h0: bool = p.get("hiring") == "1";
+        query = q0; university = u0; department = d0; subfield = s0; has_grant = g0; has_hiring = h0;
+        await run_search(q0, u0, d0, s0, g0, h0);
         try {
             options = await get_filter_options();
         } except Exception {

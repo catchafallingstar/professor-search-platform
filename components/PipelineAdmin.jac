@@ -10,11 +10,12 @@ import from .ui.spinner { Spinner }
 import from .ui.table { Table, TableHeader, TableBody, TableRow, TableHead, TableCell }
 import from .ui.empty { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription, EmptyContent }
 sv import from ..services.queue {
-    load_priority_universities, get_pipeline_status, process_next_step, get_worker_state,
+    load_priority_universities, get_pipeline_status, run_step_as_staff, get_worker_state,
     set_worker, reset_institution, get_config_status, add_openalex_key,
     InstitutionStatus, StepResult, WorkerState, ConfigStatus
 }
 import from .OpenAlexKeys { OpenAlexKeys }
+import from .StaffNav { StaffNav }
 
 def:pub StatTile(label: str, value: int, icon: any) -> JsxElement {
     return <Card className="shadow-sm">
@@ -68,7 +69,7 @@ def:pub PipelineAdmin() -> JsxElement {
     async def step() -> None {
         busy = True;
         try {
-            _r: StepResult = await process_next_step();
+            _r: StepResult = await run_step_as_staff();
             await refresh();
         } except Exception as e { error = str(e); }
         busy = False;
@@ -109,6 +110,7 @@ def:pub PipelineAdmin() -> JsxElement {
     log: list[str] = worker.log if worker else [];
 
     return <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 pt-8 pb-12 pl-6 pr-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
+        <StaffNav />
         <div className="flex flex-wrap items-end justify-between gap-4">
             <div className="flex flex-col gap-1">
                 <h1 className="text-2xl font-semibold tracking-tight">{"Ingestion pipeline"}</h1>
