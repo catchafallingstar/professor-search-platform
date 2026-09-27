@@ -26,7 +26,7 @@ The slides cover:
 - Why Jac's graph model fits universities, professors, papers, subfields, grants, and hiring signals
 - Deployment through JacHammer
 
-**Slides:** [Open the Road to Research presentation](https://www.canva.com/design/DAHWZpC00ss/5_aAtbbo6jsLTPlsyyv0Gg/edit)
+**Slides:** [Open the Road to Research presentation](https://canva.link/kha6sadbovr6n2u)
 
 ---
 
