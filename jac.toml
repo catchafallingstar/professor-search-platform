@@ -7,8 +7,10 @@ kind = "web-app"
 
 [byllm]
 [byllm.model]
+# Model + key come from .env. Claude: LLM_MODEL=anthropic/claude-sonnet-4-5 and ANTHROPIC_API_KEY=...
+# OpenAI: LLM_MODEL=gpt-4o-mini and OPENAI_API_KEY=... (LiteLLM also reads ANTHROPIC_API_KEY itself.)
 default_model = "${LLM_MODEL:-gpt-4o-mini}"
-api_key = "${OPENAI_API_KEY:-}"
+api_key = "${LLM_API_KEY:-}"
 
 
 [jac-shadcn]

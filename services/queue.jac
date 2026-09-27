@@ -539,7 +539,7 @@ def:priv set_worker(running: bool) -> WorkerState {
     require_staff();
     if running {
         if not bool(fx.llm_configured()) {
-            _log("No LLM key: importing faculty + OpenAlex papers/grants now. Hiring checks run once OPENAI_API_KEY is added.");
+            _log("No LLM key: importing faculty + OpenAlex papers/grants now. Hiring checks run once an LLM key (ANTHROPIC_API_KEY + LLM_MODEL, or OPENAI_API_KEY) is added.");
         }
         fx.start_worker();
         _log("Auto-processing started.");
