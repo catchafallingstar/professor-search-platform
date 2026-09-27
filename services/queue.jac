@@ -333,9 +333,64 @@ def step_once() -> StepResult {
 # Everything the Pipeline page calls is def:priv + require_staff() (enforced on the server).
 # The background worker is not a user: it calls process_next_step with the internal token.
 
+# Writes to the shared database must run in the shared (guest) context: a signed-in
+# staff request runs on the staff member's own root and is denied write access to
+# shared nodes. So each staff write endpoint checks require_staff() and then asks the
+# internal endpoint (anonymous + worker token) to do the work.
+
+def _as_worker(action: str, arg: str = "") -> StepResult {
+    try {
+        r = fx.call_internal("internal_action", {"action": action, "arg": arg}) as dict;
+        return StepResult(ok=bool(r.get("ok", True)), message=str(r.get("message", "")));
+    } except Exception as e {
+        return StepResult(ok=False, message=f"{action} failed: {str(e)[:200]}");
+    }
+}
+
+def:pub internal_action(worker_token: str = "", action: str = "", arg: str = "") -> StepResult {
+    if not check_worker_token(worker_token) {
+        return StepResult(ok=False, message="Forbidden");
+    }
+    if action == "load_priority" {
+        n = _load_priority();
+        return StepResult(message=f"Loaded {n} universities into the queue.");
+    }
+    if action == "step" {
+        return _run_step();
+    }
+    if action == "recount" {
+        for inst in _queue() { _recount(inst); }
+        return StepResult(message="Counters refreshed.");
+    }
+    if action == "retry_unreadable" {
+        n = 0;
+        for inst in _queue() {
+            if inst.pipeline_state in ["NO_FACULTY_FOUND", "FAILED"] {
+                inst.pipeline_state = "QUEUED";
+                inst.pipeline_note = "";
+                n += 1;
+            }
+        }
+        msg = f"Re-queued {n} universities for another faculty crawl.";
+        _log(msg);
+        return StepResult(message=msg);
+    }
+    if action == "reset_institution" {
+        inst = find_institution(arg);
+        if inst is None { return StepResult(ok=False, message="Institution not found."); }
+        inst.pipeline_state = "QUEUED";
+        inst.pipeline_note = "";
+        for p in [inst ->:HasProfessor:->] { p.pipeline_done = False; }
+        _recount(inst);
+        return StepResult(message=f"{inst.name} re-queued.");
+    }
+    return StepResult(ok=False, message="Unknown action");
+}
+
 def:priv load_priority_universities() -> list[InstitutionStatus] {
     require_staff();
-    _load_priority();
+    r = _as_worker("load_priority");
+    if not r.ok { raise RuntimeError(r.message); }
     return [_status_for(i) for i in _queue()];
 }
 
@@ -346,7 +401,7 @@ def:priv get_pipeline_status() -> list[InstitutionStatus] {
 
 def:priv run_step_as_staff() -> StepResult {
     require_staff();
-    return _run_step();
+    return _as_worker("step");
 }
 
 def:pub process_next_step(worker_token: str = "") -> StepResult {
@@ -410,24 +465,13 @@ def:priv set_worker(running: bool) -> WorkerState {
 
 def:priv recount_all() -> StepResult {
     require_staff();
-    for inst in _queue() { _recount(inst); }
-    return StepResult(message="Counters refreshed.");
+    return _as_worker("recount");
 }
 
 def:priv retry_unreadable() -> StepResult {
     # Re-queue universities whose directories could not be read (e.g. after new URLs were added).
     require_staff();
-    n = 0;
-    for inst in _queue() {
-        if inst.pipeline_state in ["NO_FACULTY_FOUND", "FAILED"] {
-            inst.pipeline_state = "QUEUED";
-            inst.pipeline_note = "";
-            n += 1;
-        }
-    }
-    msg = f"Re-queued {n} universities for another faculty crawl.";
-    _log(msg);
-    return StepResult(message=msg);
+    return _as_worker("retry_unreadable");
 }
 
 obj KeyStatus {
@@ -486,10 +530,8 @@ with entry {
 
 def:priv reset_institution(institution_id: str) -> InstitutionStatus | None {
     require_staff();
+    r = _as_worker("reset_institution", institution_id);
+    if not r.ok { return None; }
     inst = find_institution(institution_id);
-    if inst is None { return None; }
-    inst.pipeline_state = "QUEUED";
-    inst.pipeline_note = "";
-    for p in [inst ->:HasProfessor:->] { p.pipeline_done = False; }
-    return _status_for(inst);
+    return _status_for(inst) if inst is not None else None;
 }

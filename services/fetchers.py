@@ -85,6 +85,27 @@ def _worker_loop():
         time.sleep(1)
 
 
+def call_internal(function_name, params=None, timeout=600):
+    """Run a pipeline function as the internal worker (anonymous request + worker token).
+
+    Writes to the shared database only succeed from the shared (guest) context: a signed-in
+    staff user's request runs on their own root and is denied write access to shared nodes.
+    Staff endpoints therefore check require_staff() and then delegate here.
+    """
+    base = _local_api()
+    if not base:
+        raise RuntimeError("Local API not reachable")
+    body = dict(params or {})
+    body["worker_token"] = WORKER["token"]
+    req = urllib.request.Request(base + "/function/" + function_name, data=json.dumps(body).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    if not payload.get("ok"):
+        raise RuntimeError(((payload.get("error") or {}).get("message")) or "Internal call failed")
+    return (payload.get("data") or {}).get("result")
+
+
 def start_worker():
     WORKER["running"] = True
     open(_RUN_FLAG, "w").close()  # remembered across preview restarts

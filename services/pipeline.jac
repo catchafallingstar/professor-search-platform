@@ -15,7 +15,8 @@ import from services.openalex {
     short_id, clean_doi
 }
 import from services.hiring { HiringResearch, research_hiring }
-import from services.access { require_staff }
+import from services.access { require_staff, check_worker_token }
+import services.fetchers as fx;
 import from services.crawler { fetch_page, find_hiring_quote, quote_on_page, llm_ready }
 
 obj PipelineResult {
@@ -394,7 +395,20 @@ def process_professor(p: Professor, inst: Institution) -> str {
 }
 
 def:priv run_pipeline_for_professor(professor_id: str) -> PipelineResult {
+    # Staff check here; the write itself runs in the shared context (see internal_run_professor).
     require_staff();
+    try {
+        r = fx.call_internal("internal_run_professor", {"professor_id": professor_id}) as dict;
+        return PipelineResult(ok=bool(r.get("ok", True)), message=str(r.get("message", "")));
+    } except Exception as e {
+        return PipelineResult(ok=False, message="Pipeline failed: " + str(e)[:200]);
+    }
+}
+
+def:pub internal_run_professor(worker_token: str = "", professor_id: str = "") -> PipelineResult {
+    if not check_worker_token(worker_token) {
+        return PipelineResult(ok=False, message="Forbidden");
+    }
     p = find_professor(professor_id);
     if p is None { return PipelineResult(ok=False, message="Professor not found."); }
     inst = institution_of(p);
