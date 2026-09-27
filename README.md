@@ -7,7 +7,7 @@ Road to Research is a professor discovery platform built for **JacHacks A2Tech36
 
 ## Links
 
-- **Presentation / Intro Slides:** [Road to Research on Canva](https://www.canva.com/design/DAHWZpC00ss/5_aAtbbo6jsLTPlsyyv0Gg/edit)
+- **Presentation / Intro Slides:** [Road to Research on Canva](https://canva.link/kha6sadbovr6n2u)
 - **Repository:** [github.com/catchafallingstar/professor-search-platform](https://github.com/catchafallingstar/professor-search-platform)
 
 ## Intro Slides
