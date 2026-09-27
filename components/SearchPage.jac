@@ -8,7 +8,7 @@ import from .ui.button { Button }
 import from .ui.checkbox { Checkbox }
 import from .ui.label { Label }
 import from .ui.skeleton { Skeleton }
-import from .ui.native_select { NativeSelect, NativeSelectOption }
+import from .ui.native_select { NativeSelect, NativeSelectOption, NativeSelectOptGroup }
 import from .ui.empty { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription, EmptyContent }
 sv import from ..services.directory {
     search_professors, get_filter_options, ProfessorSummary, FilterOptions
@@ -29,6 +29,9 @@ def:pub ResultCard(p: ProfessorSummary) -> JsxElement {
                     <span className="font-medium">{p.university}</span>
                     <span className="text-muted-foreground">{p.department}</span>
                 </div>
+                {len(p.fields) > 0 and <div className="flex flex-wrap gap-1.5">
+                    {for f in p.fields[:3] { <Badge key={f} variant="outline">{f}</Badge> }}
+                </div>}
                 <div className="flex flex-col gap-1.5">
                     <span className="text-xs text-muted-foreground">{"Recent subfields"}</span>
                     {<div className="flex flex-wrap gap-1.5">
@@ -113,12 +116,13 @@ def:pub SearchPage() -> JsxElement {
     unis: list[str] = options.universities if options else [];
     depts: list[str] = options.departments if options else [];
     subs: list[str] = options.subfields if options else [];
+    flds: list[str] = options.fields if options else [];
     count_label = "1 professor" if len(results) == 1 else str(len(results)) + " professors";
 
     return <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 pt-8 pb-12 pl-6 pr-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
         <div className="flex flex-col gap-1">
             <h1 className="text-2xl font-semibold tracking-tight">{"Find a professor"}</h1>
-            <p className="text-sm text-muted-foreground">{"Verified university faculty with their recent OpenAlex papers, research subfields, grants and hiring statements."}</p>
+            <p className="text-sm text-muted-foreground">{"Search by name, university, department, research field or subfield. Every word must match, e.g. \"michigan robotics\" or \"purdue machine learning\"."}</p>
         </div>
         <Card className="shadow-sm">
             <CardContent className="flex flex-col gap-4">
@@ -126,7 +130,7 @@ def:pub SearchPage() -> JsxElement {
                     <HugeiconsIcon icon={Search01Icon} strokeWidth={2} className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                     <Input
                         value={query}
-                        placeholder="Search by professor name, e.g. Jessy Grizzle"
+                        placeholder="Name, university, department, field or subfield, e.g. Purdue computer vision"
                         className="h-10 pl-9"
                         onChange={lambda (e: ChangeEvent) {
                             query = e.target.value;
@@ -156,13 +160,18 @@ def:pub SearchPage() -> JsxElement {
                         </NativeSelect>
                     </div>
                     <div className="flex flex-col gap-1.5">
-                        <Label htmlFor="f-sub">{"Recent paper subfield"}</Label>
+                        <Label htmlFor="f-sub">{"Research field or subfield"}</Label>
                         <NativeSelect id="f-sub" className="w-full" value={subfield} onChange={lambda (e: ChangeEvent) {
                             subfield = e.target.value;
                             run_search(query, university, department, e.target.value, has_grant, has_hiring);
                         }}>
-                            <NativeSelectOption value="">{"All subfields"}</NativeSelectOption>
-                            {for s in subs { <NativeSelectOption key={s} value={s}>{s}</NativeSelectOption> }}
+                            <NativeSelectOption value="">{"All research areas"}</NativeSelectOption>
+                            {len(flds) > 0 and <NativeSelectOptGroup label="Fields">
+                                {for f in flds { <NativeSelectOption key={"f-" + f} value={f}>{f}</NativeSelectOption> }}
+                            </NativeSelectOptGroup>}
+                            {len(subs) > 0 and <NativeSelectOptGroup label="Subfields">
+                                {for s in subs { <NativeSelectOption key={"s-" + s} value={s}>{s}</NativeSelectOption> }}
+                            </NativeSelectOptGroup>}
                         </NativeSelect>
                     </div>
                 </div>

@@ -42,6 +42,8 @@ node Professor {
         match_status: str = "PENDING",
         pipeline_done: bool = False,
         cached_subfields: list[str] = [],
+        cached_fields: list[str] = [],
+        search_text: str = "",
         cached_grant_count: int = 0,
         cached_has_hiring: bool = False,
         profile_extracted: bool = False,
@@ -79,7 +81,8 @@ node Paper {
 
 node Subfield {
     has openalex_subfield_id: str = "",
-        name: str = "";
+        name: str = "",
+        field_name: str = "";   # OpenAlex field this subfield belongs to (e.g. "Engineering")
 }
 
 node Grant {

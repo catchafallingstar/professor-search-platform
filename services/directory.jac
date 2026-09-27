@@ -13,6 +13,7 @@ obj ProfessorSummary {
         department: str = "",
         university: str = "",
         subfields: list[str] = [],
+        fields: list[str] = [],
         grant_count: int = 0,
         has_hiring: bool = False,
         match_status: str = "";
@@ -21,7 +22,8 @@ obj ProfessorSummary {
 obj FilterOptions {
     has universities: list[str] = [],
         departments: list[str] = [],
-        subfields: list[str] = [];
+        subfields: list[str] = [],
+        fields: list[str] = [];
 }
 
 obj AnchorView {
@@ -117,22 +119,32 @@ def:pub search_professors(
     has_grant: bool = False,
     has_hiring: bool = False
 ) -> list[ProfessorSummary] {
+    # Free-text search across name, university, department, research field and subfield.
+    # Every word must appear somewhere (case/accent-insensitive), e.g. "michigan robotics".
+    # Defaults can arrive as the strings "False"/"True" from REST callers; only real truthy values filter.
+    has_grant = has_grant is True or str(has_grant).lower() == "true";
+    has_hiring = has_hiring is True or str(has_hiring).lower() == "true";
     data = get_data_root();
-    q = normalize_name(query);
+    words = [w for w in normalize_name(query).split() if w];
     results: list[ProfessorSummary] = [];
     for inst in [data ->:HasInstitution:->] {
         if university and inst.name != university {
             continue;
         }
+        inst_text = normalize_name(inst.name + " " + inst.city + " " + inst.state);
         for p in [inst ->:HasProfessor:->] {
-            if q and q not in normalize_name(p.name) {
-                continue;
+            if len(words) > 0 {
+                hay = p.search_text or normalize_name(" | ".join([p.name, p.title, p.department] + p.cached_fields + p.cached_subfields));
+                hay = hay + " | " + inst_text;
+                if not all([w in hay for w in words]) {
+                    continue;
+                }
             }
             if department and p.department != department {
                 continue;
             }
             subs = p.cached_subfields;
-            if subfield and subfield not in subs {
+            if subfield and subfield not in subs and subfield not in p.cached_fields {
                 continue;
             }
             grants = p.cached_grant_count;
@@ -146,7 +158,7 @@ def:pub search_professors(
             results.append(
                 ProfessorSummary(
                     id=jid(p), name=p.name, title=p.title, department=p.department,
-                    university=inst.name, subfields=subs, grant_count=grants,
+                    university=inst.name, subfields=subs, fields=p.cached_fields, grant_count=grants,
                     has_hiring=hiring, match_status=p.match_status
                 )
             );
@@ -172,11 +184,17 @@ def:pub get_filter_options() -> FilterOptions {
                     opts.subfields.append(s);
                 }
             }
+            for f in p.cached_fields {
+                if f not in opts.fields {
+                    opts.fields.append(f);
+                }
+            }
         }
     }
     opts.universities.sort();
     opts.departments.sort();
     opts.subfields.sort();
+    opts.fields.sort();
     return opts;
 }
 

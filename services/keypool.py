@@ -34,9 +34,11 @@ ANON = ""                 # the keyless pool
 LOW_WATERMARK = 30        # credits; below this a key is rested proactively (a search costs 10)
 LOW_REST_SECONDS = 3600   # how long to rest a key that hit the watermark if OpenAlex gives no reset time
 
-_DIR = os.path.dirname(os.path.abspath(__file__))
-_KEY_FILE = os.path.join(_DIR, ".openalex_keys")
-_STATE_FILE = os.path.join(_DIR, ".openalex_keystate.json")
+# Stored in <project>/data/ so they survive sandbox restarts (services/ dot-files did not).
+_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+os.makedirs(_DIR, exist_ok=True)
+_KEY_FILE = os.path.join(_DIR, "openalex_keys.txt")
+_STATE_FILE = os.path.join(_DIR, "openalex_keystate.json")
 _LOCK = threading.Lock()
 
 

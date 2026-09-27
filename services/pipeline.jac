@@ -172,11 +172,14 @@ def match_professor(p: Professor, inst: Institution) -> None {
 
 # ---------- papers ----------
 
-def _upsert_subfield(data: DataRoot, sid: str, name: str) -> Subfield {
+def upsert_subfield(data: DataRoot, sid: str, name: str, field_name: str = "") -> Subfield {
     for s in [data ->:HasSubfieldIndex:->] {
-        if s.openalex_subfield_id == sid { return s; }
+        if (sid and s.openalex_subfield_id == sid) or (not sid and s.name == name) {
+            if field_name and not s.field_name { s.field_name = field_name; }
+            return s;
+        }
     }
-    s = Subfield(openalex_subfield_id=sid, name=name);
+    s = Subfield(openalex_subfield_id=sid, name=name, field_name=field_name);
     data +>:HasSubfieldIndex():+> s;
     return s;
 }
@@ -201,10 +204,18 @@ def _upsert_paper(data: DataRoot, w: dict) -> Paper {
     paper.paper_url = doi or _s(loc, "landing_page_url") or _s(w, "id");
     paper.citation_count = int(w.get("cited_by_count", 0) or 0);
     paper.updated_at = now_iso();
-    sub = (w.get("primary_topic", {}) or {}).get("subfield", {}) or {};
+    topic = w.get("primary_topic", {}) or {};
+    sub = topic.get("subfield", {}) or {};
+    fld = topic.get("field", {}) or {};
     sname = _s(sub, "display_name");
-    if sname and len([paper ->:HasSubfield:->]) == 0 {
-        paper +>:HasSubfield():+> _upsert_subfield(data, short_id(_s(sub, "id")), sname);
+    fname = _s(fld, "display_name");
+    existing = [paper ->:HasSubfield:->];
+    if sname and len(existing) == 0 {
+        paper +>:HasSubfield():+> upsert_subfield(data, short_id(_s(sub, "id")), sname, fname);
+    } elif fname {
+        for s in existing {
+            if not s.field_name { s.field_name = fname; }
+        }
     }
     return paper;
 }
@@ -365,15 +376,28 @@ def hiring_for(p: Professor, inst: Institution) -> bool {
 def refresh_professor_cache(p: Professor) -> None {
     # Search reads these instead of walking papers/grants for every professor on every query.
     subs: list[str] = [];
+    fields: list[str] = [];
     for paper in [p ->:Authored:->] {
         for s in [paper ->:HasSubfield:->] {
             if s.name not in subs { subs.append(s.name); }
+            if s.field_name and s.field_name not in fields { fields.append(s.field_name); }
         }
     }
     subs.sort();
+    fields.sort();
     p.cached_subfields = subs;
+    p.cached_fields = fields;
     p.cached_grant_count = len([p ->:HasGrant:->]);
     p.cached_has_hiring = len([s for s in [p ->:HasHiringSignal:->] if s.quote]) > 0;
+    refresh_search_text(p);
+}
+
+def refresh_search_text(p: Professor) -> None {
+    # One normalized string per professor: name, title, department, university, fields, subfields.
+    insts = [p <-:HasProfessor:<-];
+    uni = insts[0].name if len(insts) > 0 else "";
+    parts = [p.name, p.title, p.department, uni] + p.cached_fields + p.cached_subfields;
+    p.search_text = normalize_name(" | ".join(parts));
 }
 
 def process_professor(p: Professor, inst: Institution) -> str {

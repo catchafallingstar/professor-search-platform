@@ -4,3 +4,7 @@ services/.openalex_keys
 services/.openalex_keystate.json
 services/.llm_key.json
 services/.worker_running
+services/.worker_token
+data/openalex_keys.txt
+data/openalex_keystate.json
+data/.directory.*.tmp

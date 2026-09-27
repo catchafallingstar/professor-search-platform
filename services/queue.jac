@@ -17,7 +17,8 @@ import from services.openalex { list_top_us_institutions, short_id }
 import from services.crawler {
     PageData, fetch_page, extract_faculty, extract_profile, guess_directories, same_domain
 }
-import from services.pipeline { resolve_institution, process_professor, institution_awards }
+import from services.pipeline { resolve_institution, process_professor, institution_awards, refresh_professor_cache }
+import from services.persist { export_directory, restore_directory }
 import services.universities as unis;
 import services.fetchers as fx;
 import from services.access { require_staff, worker_token, check_worker_token }
@@ -383,6 +384,28 @@ def:pub internal_action(worker_token: str = "", action: str = "", arg: str = "")
         _log(msg);
         return StepResult(message=msg);
     }
+    if action == "restore" {
+        msg = restore_directory();
+        for inst in _queue() { _recount(inst); }
+        _log(msg);
+        return StepResult(message=msg);
+    }
+    if action == "snapshot" {
+        ok = export_directory(True);
+        return StepResult(ok=ok, message=("Snapshot saved." if ok else "Nothing to save yet."));
+    }
+    if action == "reindex" {
+        # Backfill search text + research fields for professors stored before search was widened.
+        n = 0;
+        for inst in _queue() {
+            for p in [inst ->:HasProfessor:->] {
+                refresh_professor_cache(p);
+                n += 1;
+            }
+        }
+        export_directory(True);
+        return StepResult(message=f"Re-indexed {n} professors for search.");
+    }
     if action == "recrawl_all" {
         # Picks up newly added department directories / the per-department limit.
         # Existing professors keep their results; only new ones get processed.
@@ -422,6 +445,43 @@ def:priv get_pipeline_status() -> list[InstitutionStatus] {
     return [_status_for(i) for i in _queue()];
 }
 
+def:priv download_snapshot() -> str {
+    # Staff: returns the current directory as JSON text (to save a copy outside the sandbox).
+    require_staff();
+    _as_worker("snapshot");
+    import services.snapshot as snapmod;
+    d = snapmod.load();
+    import json;
+    return json.dumps(d) if d is not None else "";
+}
+
+def:priv upload_snapshot(content: str) -> StepResult {
+    # Staff: restore the directory from a previously downloaded snapshot file.
+    require_staff();
+    import json;
+    try {
+        parsed = json.loads(content);
+    } except Exception {
+        return StepResult(ok=False, message="That file is not a valid snapshot.");
+    }
+    if not isinstance(parsed, dict) or "institutions" not in parsed {
+        return StepResult(ok=False, message="That file is not a valid snapshot.");
+    }
+    import services.snapshot as snapmod;
+    snapmod.save(parsed as dict, True);
+    return _as_worker("restore");
+}
+
+def:priv snapshot_info() -> StepResult {
+    require_staff();
+    import services.snapshot as snapmod;
+    i = snapmod.info() as dict;
+    if not bool(i["exists"]) {
+        return StepResult(ok=False, message="No snapshot saved yet.");
+    }
+    return StepResult(message=f"Last saved {str(i['saved_at'])[:16].replace('T', ' ')} UTC: {i['institutions']} universities, {i['professors']} professors.");
+}
+
 def:priv run_step_as_staff() -> StepResult {
     require_staff();
     return _as_worker("step");
@@ -446,6 +506,11 @@ def _run_step() -> StepResult {
     }
     fx.clear_rate_notice();
     _log(r.message);
+    try {
+        export_directory(False);   # throttled; keeps data/directory.json current
+    } except Exception as e {
+        print(f"[persist] snapshot failed: {str(e)[:200]}");
+    }
     return r;
 }
 
@@ -548,7 +613,9 @@ def:priv add_openalex_key(key: str) -> StepResult {
 with entry {
     # Worker authenticates to process_next_step with this token; then resume if it was running.
     fx.set_worker_token(worker_token());
-    fx.resume_if_flagged();
+    # Reload the saved directory into an empty graph (sandbox restarts wipe .jac/data),
+    # then resume the worker. Runs via the internal endpoint once the API is up.
+    fx.restore_then_resume();
 }
 
 def:priv reset_institution(institution_id: str) -> InstitutionStatus | None {

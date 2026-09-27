@@ -123,6 +123,29 @@ def stop_worker():
         pass
 
 
+def restore_then_resume():
+    """On server boot: restore data/directory.json into the (possibly empty) graph via the
+    internal endpoint, re-index for search, then resume the worker if it was running."""
+    def _go():
+        for _ in range(60):          # wait for the API to come up (max ~2 min)
+            if _local_api():
+                break
+            time.sleep(2)
+        time.sleep(8)                # the account system finishes initialising after /healthz answers
+        for action in ("restore", "reindex"):
+            for attempt in range(12):   # retry ~2 min: early calls can 500 while the server warms up
+                try:
+                    r = call_internal("internal_action", {"action": action, "arg": ""}, timeout=900)
+                    print(f"[persist] {action}: {(r or {}).get('message', '')}")
+                    break
+                except Exception as e:
+                    if attempt == 11:
+                        print(f"[persist] {action} failed after retries: {e}")
+                    time.sleep(10)
+        resume_if_flagged()
+    threading.Thread(target=_go, daemon=True).start()
+
+
 def resume_if_flagged():
     if os.path.exists(_RUN_FLAG) and not WORKER["running"]:
         start_worker()
