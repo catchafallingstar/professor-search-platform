@@ -49,7 +49,10 @@ def:pub useAuth() -> dict {
     useEffect(lambda {
         handler = lambda (e: any) { tick = tick + 1; };
         window.addEventListener("atlas-auth", handler);
-        if not _ready and not _loading {
+        if _ready {
+            # Session resolved before this component subscribed: re-render once to pick it up.
+            tick = tick + 1;
+        } elif not _loading {
             _loading = True;
             refreshSession("");
         }
