@@ -1,38 +1,64 @@
-# Empty
+# Road to Research
 
-A blank canvas — the minimal jac-shadcn starter the other templates are built on.
+**Helping students find professors, understand their recent research, discover funding, and identify current research opportunities — all in one place.**
 
-One client page, the violet theme wired up, and nothing else in the way. Start
-here when none of the other templates fit, and describe what you want to build.
+Road to Research is a professor discovery platform built for **JacHacks A2Tech360**. It combines official university faculty information, [OpenAlex](https://openalex.org/) scholarly data, and AI-assisted web research to make finding research opportunities easier for students.
 
-## What you get
+Instead of jumping between university directories, publication databases, grant websites, and individual lab pages, students can search one platform to understand:
 
-- `main.jac` — a `cl { }` block with a single `def:pub app()` page (a centered
-  card). This is the whole app.
-- `components/ui/` — the two jac-shadcn primitives (`Button`, `Card`) the page
-  uses. Add more with `jac add --shadcn <name>`.
-- `styles/global.css` — semantic design tokens and the theme, already wired up.
-- `lib/utils.jac` — `cn()` for merging class names.
+- Who a professor is
+- Which department they belong to
+- What they have published recently
+- Which research subfields their recent work belongs to
+- Which research grants they are connected to
+- Whether they have a public statement about recruiting students or researchers
 
-## Run it
+---
 
-```bash
-jac install
-jac start --dev
-```
+## The Problem
 
-Open <http://localhost:8000>.
+Finding a research professor is surprisingly difficult.
 
-## Where to go next
+A student may need to:
 
-- **Add a page / routing** — create a `pages/` directory; files become routes
-  by convention. See `jac guide jac-cl-routing`.
-- **Add a backend** — create `services/foo.sv.jac` with `def:pub` functions;
-  each becomes a `POST /function/<name>` REST endpoint automatically, and data
-  hung off `root` persists with no database to set up (Jac stores the graph for
-  you — SQLite in `.jac/data/` by default, MongoDB via `MONGODB_URI`). See
-  `jac guide jac-sv-endpoints` and `jac guide jac-sv-persistence`.
-- **Add auth** — see `jac guide jac-sv-auth` and `jac guide jac-cl-auth`.
+1. Search a university department website
+2. Find individual faculty profiles
+3. Search publication databases
+4. Figure out whether two researchers with the same name are actually the same person
+5. Read recent papers to understand what the professor currently works on
+6. Search grant databases for funding
+7. Search faculty and lab pages again to see whether the professor is accepting students
 
-`AGENTS.md` lists the reference guides bundled with the compiler; read them
-before writing Jac — the syntax is easy to confuse with Python or JSX.
+Most of this information exists, but it is spread across many different systems.
+
+**Road to Research connects those pieces together.**
+
+---
+
+## How It Works
+
+Our pipeline starts with the university rather than blindly searching researchers by name.
+
+```mermaid
+flowchart TD
+    A[University] --> B[Official Faculty Directory]
+    B --> C[Professor]
+    C --> D[Faculty Profile]
+    D --> E[Known Publication / DOI if available]
+
+    E --> F[OpenAlex Identity Matching]
+    C --> F
+
+    F --> G[OpenAlex Author ID]
+    G --> H[Recent Papers]
+    H --> I[Research Subfields]
+    H --> J[Linked Awards]
+
+    J --> K[Grant Information]
+
+    C --> L[AI Hiring Research]
+    L --> M[Hiring Quote + Source]
+
+    I --> N[Professor Profile]
+    K --> N
+    M --> N
