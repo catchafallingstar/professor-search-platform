@@ -179,6 +179,11 @@ def:pub search_professors(
 # while the pipeline was busy. Rebuilt at most once a minute; filtering is then pure Python.
 glob _SEARCH_CACHE: dict = {"t": 0.0, "rows": []};
 
+def reset_search_cache() -> None {
+    # Called after bulk imports so new professors appear in search immediately.
+    _SEARCH_CACHE["t"] = 0.0;
+}
+
 def _search_rows() -> list {
     import time;
     now = time.time();

@@ -51,17 +51,34 @@ def _mongo_col():
         return None
 
 
+def _count_profs(payload):
+    try:
+        return sum(len(i.get("professors", [])) for i in payload.get("institutions", []))
+    except Exception:
+        return 0
+
+
 def _mongo_put(body):
     col = _mongo_col()
     if col is None:
         return
     try:
         import zlib
+        # Never let a smaller directory replace a bigger one. After a sandbox reset the server
+        # starts nearly empty; saving that over the good copy is how 2205 professors were lost.
+        new_n = _count_profs(json.loads(body.decode("utf-8")))
+        head = col.find_one({"n": 0}, {"data": 0}, sort=[("gen", -1)])
+        old_n = int((head or {}).get("profs", 0) or 0)
+        if old_n and new_n < old_n * 0.9:
+            print(f"[snapshot] kept the MongoDB copy ({old_n} professors); not replacing it with {new_n}.")
+            return
         data = zlib.compress(body, 6)
         parts = [data[i:i + _CHUNK] for i in range(0, len(data), _CHUNK)] or [b""]
         gen = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
-        col.insert_many([{"gen": gen, "n": i, "of": len(parts), "data": p} for i, p in enumerate(parts)])
-        col.delete_many({"gen": {"$ne": gen}})   # keep only the newest complete copy
+        col.insert_many([{"gen": gen, "n": i, "of": len(parts), "profs": new_n, "data": p} for i, p in enumerate(parts)])
+        # keep the newest copy plus the previous one as a fallback
+        gens = sorted({d["gen"] for d in col.find({}, {"gen": 1})}, reverse=True)
+        col.delete_many({"gen": {"$nin": gens[:2]}})
     except Exception as e:
         print(f"[snapshot] mongo save failed: {e}")
 
@@ -123,12 +140,20 @@ def exists():
 
 
 def load():
+    """The biggest available copy wins: local file vs MongoDB (a fresh sandbox's local file
+    may hold only what was re-crawled since the reset)."""
+    local = None
     try:
         with open(PATH) as fh:
-            return json.load(fh)
+            local = json.load(fh)
     except (OSError, ValueError):
         pass
-    return _remote_get()
+    remote = _remote_get()
+    if local is None:
+        return remote
+    if remote is None:
+        return local
+    return remote if _count_profs(remote) > _count_profs(local) else local
 
 
 def save(payload, force=False, min_interval=900.0):

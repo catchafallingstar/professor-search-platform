@@ -20,6 +20,7 @@ import from services.crawler {
 }
 import from services.pipeline { resolve_institution, process_professor, institution_awards, refresh_professor_cache, discover_grants, ingest_works }
 import from services.persist { export_directory, restore_directory }
+import from services.directory { reset_search_cache }
 import services.universities as unis;
 import services.fetchers as fx;
 import services.snapshot as snap;
@@ -302,6 +303,8 @@ def _step_unlocked() -> StepResult {
         n = _load_priority();
         return StepResult(message=f"Loaded {n} priority universities.");
     }
+    # PROCESSING (matching the professors already imported) comes before crawling new
+    # universities, so imported faculty get OpenAlex data promptly.
     if bool((fx.rate_limit_status() as dict)["limited"]) {
         r = _crawl_only_step();
         if r is not None { return r; }
@@ -423,6 +426,31 @@ def:pub internal_action(worker_token: str = "", action: str = "", arg: str = "")
             }
         }
         msg = f"Re-crawling faculty directories for {n} universities (per-department limit {MAX_PROFESSORS_PER_DEPARTMENT}).";
+        _log(msg);
+        return StepResult(message=msg);
+    }
+    if action == "crawl_all" {
+        # Import faculty for every university that has not been crawled yet (no OpenAlex calls,
+        # only the official directory pages), so the directory fills up fast after a reset.
+        n = 0; added = 0;
+        for inst in _queue() {
+            if inst.pipeline_state not in ["QUEUED", "CRAWLING"] { continue; }
+            try {
+                added += _crawl_faculty(inst);
+            } except Exception as e {
+                inst.pipeline_note = str(e)[:300];
+            }
+            if len([inst ->:HasProfessor:->]) > 0 {
+                inst.pipeline_state = "PROCESSING";
+            } else {
+                inst.pipeline_state = "NO_FACULTY_FOUND";
+            }
+            _recount(inst);
+            n += 1;
+        }
+        reset_search_cache();
+        export_directory(True);
+        msg = f"Crawled {n} universities: {added} professors imported.";
         _log(msg);
         return StepResult(message=msg);
     }

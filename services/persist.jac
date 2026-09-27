@@ -89,9 +89,12 @@ def export_directory(force: bool = False) -> bool {
 }
 
 def restore_directory() -> str {
+    # MERGE, never skip: if the pipeline already created (some) universities after a reset,
+    # the saved professors are added to them instead of the snapshot being ignored.
     data = get_data_root();
-    if len([data ->:HasInstitution:->]) > 0 {
-        return "Graph already has data; snapshot not loaded.";
+    existing: dict = {};
+    for i in [data ->:HasInstitution:->] {
+        existing[i.ipeds_id or i.name] = i;
     }
     raw = snap.load();
     if not isinstance(raw, dict) {
@@ -106,11 +109,17 @@ def restore_directory() -> str {
     grants_by_id: dict = {};
     n_i = 0; n_p = 0;
     for row in (d.get("institutions", []) or []) {
-        inst = Institution();
-        _apply(inst, row, INST_FIELDS);
-        data +>:HasInstitution():+> inst;
-        n_i += 1;
+        key = str(row.get("ipeds_id", "") or row.get("name", ""));
+        inst: Institution | None = existing.get(key);
+        if inst is None {
+            inst = Institution();
+            _apply(inst, row, INST_FIELDS);
+            data +>:HasInstitution():+> inst;
+            n_i += 1;
+        }
+        have = [x.normalized_name for x in [inst ->:HasProfessor:->]];
         for pr in (row.get("professors", []) or []) {
+            if str(pr.get("normalized_name", "") or "") in have { continue; }   # already re-imported
             p = Professor();
             _apply(p, pr, PROF_FIELDS);
             inst +>:HasProfessor():+> p;
