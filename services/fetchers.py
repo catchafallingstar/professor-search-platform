@@ -417,24 +417,68 @@ def html_to_text(raw, base):
     return re.sub(r"\n\s*\n+", "\n", s).strip()
 
 
+BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+READER = "https://r.jina.ai/"   # public reader: renders the page (incl. bot checks / JS) and returns Markdown
+
+
+def _blocked(text):
+    t = (text or "")[:3000].lower()
+    return ("just a moment" in t and "cloudflare" in t) or "enable javascript and cookies" in t or "attention required" in t
+
+
+def _via_reader(url):
+    """Fallback for sites that block automated requests (e.g. most umich.edu pages return a
+    Cloudflare 403). Returns Markdown with [text](url) links, the same shape html_to_text gives."""
+    # Plain request (like curl): the reader rejects some custom header combinations with 403.
+    req = urllib.request.Request(READER + url, headers={"User-Agent": "curl/8.5.0", "Accept": "*/*"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        md = resp.read(3_000_000).decode("utf-8", errors="ignore")
+    title = ""
+    m = re.match(r"\s*Title:\s*(.+)", md)
+    if m:
+        title = m.group(1).strip()[:200]
+    body = md.split("Markdown Content:", 1)[-1]
+    body = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", body)          # drop images
+    body = re.sub(r"\[\[email[^\]]*\]\]\([^)]*\)", " ", body)  # drop obfuscated e-mail links
+    return title, body
+
+
 def fetch_page(url):
-    """Returns {"url", "title", "text", "ok"}; never raises."""
-    out = {"url": url or "", "title": "", "text": "", "ok": False}
+    """Returns {"url", "title", "text", "ok", "via"}; never raises.
+    Direct request first; if the site blocks bots, retry through the reader service."""
+    out = {"url": url or "", "title": "", "text": "", "ok": False, "via": ""}
     if not url or not url.startswith("http"):
         return out
+    blocked = False
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        req = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA, "Accept": "text/html,application/xhtml+xml",
+                                                   "Accept-Language": "en-US,en;q=0.9"})
         with urllib.request.urlopen(req, timeout=20) as resp:
-            if "html" not in resp.headers.get("Content-Type", "") and "text" not in resp.headers.get("Content-Type", ""):
-                return out
+            ctype = resp.headers.get("Content-Type", "")
             raw = resp.read(2_000_000).decode("utf-8", errors="ignore")
             final = resp.geturl()
-        m = re.search(r"(?is)<title[^>]*>(.*?)</title>", raw)
-        text = html_to_text(raw, final)
-        out.update(url=final, title=html.unescape(" ".join(m.group(1).split()))[:200] if m else "",
-                   text=text, ok=len(text) > 50)
+        if "html" in ctype or "text" in ctype:
+            if _blocked(raw):
+                blocked = True
+            else:
+                m = re.search(r"(?is)<title[^>]*>(.*?)</title>", raw)
+                text = html_to_text(raw, final)
+                out.update(url=final, title=html.unescape(" ".join(m.group(1).split()))[:200] if m else "",
+                           text=text, ok=len(text) > 50, via="direct")
+    except urllib.error.HTTPError as e:
+        blocked = e.code in (401, 403, 429, 503)
+        if not blocked:
+            print(f"[fetch] {url} -> HTTP {e.code}")
     except Exception as e:
+        blocked = True
         print(f"[fetch] {url} failed: {e}")
+    if blocked or not out["ok"]:
+        try:
+            title, text = _via_reader(url)
+            if len(text) > 200 and not _blocked(text):
+                out.update(url=url, title=title, text=text, ok=True, via="reader")
+        except Exception as e:
+            print(f"[fetch] reader for {url} failed: {e}")
     return out
 
 
@@ -443,7 +487,7 @@ def fetch_page(url):
 _TITLE_RE = re.compile(r"\b((?:Distinguished |Endowed |University |Collegiate |Full |Associate |Assistant )*Professor\b[^\n\[\]]{0,80})", re.I)
 _EXCLUDE_TITLE = re.compile(r"emerit|adjunct|affiliate|courtesy|visiting|lecturer|teaching|clinical|practice|research professor|professor of practice", re.I)
 _LINK_RE = re.compile(r"\[([^\]]{3,160})\]\((https?://[^)\s]+)\)")
-_BAD_NAME = re.compile(r"faculty|directory|people|department|school|college|university|research|news|events|about|contact|staff|students|home|program|center|lab\b|search|filter|view|profile|more|apply|give|login", re.I)
+_BAD_NAME = re.compile(r"faculty|directory|people|department|school|college|university|research|news|events|about|contact|staff|students|home|program|center|lab\b|search|filter|view|profile|more|apply|give|login|professor|engineering|science|medicine|robotics|mathematics|physics|chemistry|biology|institute|interests|office|phone|email|website", re.I)
 
 
 def _clean_name(s):
@@ -483,17 +527,62 @@ def _dept_near(text, end):
     return ""
 
 
+def _flip(name):
+    """"Ackerman, Mark S." -> "Mark S. Ackerman" (directories often list Last, First)."""
+    if name.count(",") == 1:
+        last, first = [x.strip() for x in name.split(",")]
+        if last and first and len(last.split()) <= 2 and not re.search(r"ph\.?d|jr|sr|iii", first, re.I):
+            return f"{first} {last}".strip()
+    return name
+
+
+def _line_faculty(text, department):
+    """Unlinked layout: a name on its own line, the title on the next line
+    (e.g. UMich CSE: "Adler, Dan" / "Assistant Professor, EECS- Computer Science and Engineering")."""
+    lines = [l.strip() for l in text.split("\n")]
+    out = []
+    for i in range(len(lines) - 1):
+        cand = lines[i]
+        if not cand or len(cand) > 60 or "[" in cand or "http" in cand:
+            continue
+        nxt = ""
+        for j in range(i + 1, min(i + 3, len(lines))):
+            if lines[j]:
+                nxt = lines[j]
+                break
+        m = _TITLE_RE.search(nxt)
+        # the professor rank must appear in the first title on the line (named chairs first:
+        # "S. Jack Hu Collegiate Professor of ... Professor, EECS"), and not as research/emeritus
+        if not m or m.start() > 90 or _EXCLUDE_TITLE.search(nxt[:m.end() + 20]):
+            continue
+        name = _clean_name(_flip(cand))
+        if _looks_like_name(name):
+            out.append((name, m.group(1), ""))
+    return out
+
+
 def extract_faculty_rules(page, department):
     """Pull professor-rank faculty from an official directory page: linked names + nearby titles.
 
     `department` is the directory's label. For college-wide directories (label starting with
     "College of"/"School of") the per-person department link is used when present.
+    Handles: "[Name](url) Title", "[Name Title](url)", "[Last, First](url)" and unlinked
+    "Name" / "Title" line pairs. Titles such as "Research Professor", "Emeritus", adjunct,
+    lecturer, clinical and visiting are excluded; people whose FIRST listed title is a
+    professor rank are kept.
     """
     if not page.get("ok"):
         return []
     text = page["text"]
     college_wide = bool(re.match(r"(college|school|faculty) of", department or "", re.I))
     out, seen = [], set()
+    for name, title, _ in _line_faculty(text, department):
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        rank = re.match(r"((?:Distinguished |Endowed |University |Collegiate |Full |Associate |Assistant )*Professor)", title, re.I)
+        out.append({"name": name, "title": (rank.group(1) if rank else title)[:80], "department": department, "profile_url": ""})
     for m in _LINK_RE.finditer(text):
         label, url = m.group(1).strip(), m.group(2)
         title = ""
@@ -504,12 +593,16 @@ def extract_faculty_rules(page, department):
             title = inner.group(1)
         else:      # "[Aliaga](url)\n Professor"
             title = _title_near(text, m.start(), m.end())
-        name = _clean_name(name)
+        name = _clean_name(_flip(name))
         title = re.sub(r"\s+", " ", title).strip(" ,;")
         if not title or _EXCLUDE_TITLE.search(title) or not _looks_like_name(name):
             continue
         key = name.lower()
         if key in seen:
+            # the line-pair pass found this person without a profile link; add the link
+            for o in out:
+                if o["name"].lower() == key and not o["profile_url"]:
+                    o["profile_url"] = url
             continue
         seen.add(key)
         # Keep the rank only (drop trailing campus names etc.)
@@ -520,6 +613,70 @@ def extract_faculty_rules(page, department):
         out.append({"name": name, "title": (rank.group(1) if rank else title)[:80],
                     "department": dept, "profile_url": url})
     return out
+
+
+def _get_json_any(url):
+    """JSON from a university site: direct first, reader fallback when blocked."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA, "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="ignore"))
+    except Exception:
+        pass
+    req = urllib.request.Request(READER + url, headers={"User-Agent": "curl/8.5.0", "Accept": "*/*"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        body = resp.read().decode("utf-8", errors="ignore")
+    start = min([i for i in (body.find("["), body.find("{")) if i >= 0] or [0])
+    return json.loads(body[start:])
+
+
+def wordpress_faculty(site_url, department):
+    """Many department sites are WordPress with a public "people" feed carrying each person's
+    official primary title (e.g. every *.engin.umich.edu site). Returns the same rows as
+    extract_faculty_rules, or [] when the site has no such feed."""
+    parts = urllib.parse.urlparse(site_url)
+    base = f"{parts.scheme}://{parts.netloc}"
+    out, seen = [], set()
+    for page in range(1, 11):
+        url = (f"{base}/wp-json/wp/v2/people?per_page=100&page={page}"
+               "&_fields=title,link,meta.umcoecm_people_primary_title,meta.umcoecm_people_sort_key")
+        try:
+            data = _get_json_any(url)
+        except Exception:
+            break
+        if not isinstance(data, list) or not data:
+            break
+        for p in data:
+            name = html.unescape(((p.get("title") or {}).get("rendered") or "")).strip()
+            title = ((p.get("meta") or {}).get("umcoecm_people_primary_title") or "").strip()
+            m = _TITLE_RE.search(title)
+            if not name or not m or m.start() > 60 or _EXCLUDE_TITLE.search(title[:m.end() + 20]):
+                continue
+            name = _clean_name(name)
+            if not _looks_like_name(name) or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            rank = re.match(r"((?:Distinguished |Endowed |University |Collegiate |Full |Associate |Assistant )*Professor)", m.group(1), re.I)
+            out.append({"name": name, "title": (rank.group(1) if rank else m.group(1))[:80],
+                        "department": department, "profile_url": p.get("link", "")})
+        if len(data) < 100:
+            break
+    return out
+
+
+def extract_faculty_any(url, department):
+    """Everything we know how to read for one directory URL: page parser first, then the
+    WordPress people feed when the page itself is rendered by JavaScript."""
+    page = fetch_page(url)
+    rows = extract_faculty_rules(page, department)
+    if len(rows) < 5:
+        try:
+            wp = wordpress_faculty(url, department)
+            if len(wp) > len(rows):
+                return wp, "wordpress"
+        except Exception as e:
+            print(f"[fetch] wordpress feed for {url} failed: {e}")
+    return rows, page.get("via") or "fail"
 
 
 def squash(t):

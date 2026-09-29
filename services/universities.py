@@ -22,8 +22,32 @@ PRIORITY = [
     # ---- Tier 1: Michigan ----
     # Directory URLs below were fetched and parsed successfully from the sandbox.
     _u("University of Michigan", "Ann Arbor", "MI", "https://umich.edu", "170976", "00jmfr291", 1, [
+        # Most umich.edu pages sit behind a bot check; fetch_page reads them through the reader fallback.
         ["Robotics", "https://robotics.umich.edu/people/faculty/"],
-        # cse.engin.umich.edu / ece.engin.umich.edu return 403 to automated requests
+        ["Computer Science and Engineering", "https://cse.engin.umich.edu/people/faculty/"],
+        ["Electrical and Computer Engineering", "https://ece.engin.umich.edu/people/directory/faculty/"],
+        ["Mechanical Engineering", "https://me.engin.umich.edu/people/faculty/"],
+        ["Aerospace Engineering", "https://aero.engin.umich.edu/people/faculty/"],
+        ["Chemical Engineering", "https://che.engin.umich.edu/people/faculty/"],
+        ["Civil and Environmental Engineering", "https://cee.engin.umich.edu/people/faculty/"],
+        ["Industrial and Operations Engineering", "https://ioe.engin.umich.edu/people/faculty/"],
+        ["Materials Science and Engineering", "https://mse.engin.umich.edu/people/faculty/"],
+        ["Nuclear Engineering and Radiological Sciences", "https://ners.engin.umich.edu/people/faculty/"],
+        ["Biomedical Engineering", "https://bme.umich.edu/people/faculty/"],
+        ["Climate and Space Sciences and Engineering", "https://clasp.engin.umich.edu/people/faculty/"],
+        ["Naval Architecture and Marine Engineering", "https://name.engin.umich.edu/people/faculty/"],
+        ["Mathematics", "https://lsa.umich.edu/math/people/faculty.html"],
+        ["Statistics", "https://lsa.umich.edu/stats/people/faculty.html"],
+        ["Physics", "https://lsa.umich.edu/physics/people/faculty.html"],
+        ["Chemistry", "https://lsa.umich.edu/chem/people/faculty.directory.html"],
+        ["Astronomy", "https://lsa.umich.edu/astro/people/faculty.html"],
+        ["Economics", "https://lsa.umich.edu/econ/people/faculty.html"],
+        ["Psychology", "https://lsa.umich.edu/psych/people/faculty.directory.html"],
+        ["Molecular, Cellular, and Developmental Biology", "https://lsa.umich.edu/mcdb/people/faculty.html"],
+        ["Ecology and Evolutionary Biology", "https://lsa.umich.edu/eeb/people/faculty.html"],
+        ["Earth and Environmental Sciences", "https://lsa.umich.edu/earth/people/faculty.html"],
+        ["Linguistics", "https://lsa.umich.edu/linguistics/people/faculty.html"],
+        ["School of Information", "https://www.si.umich.edu/people/directory/faculty"],
     ]),
     _u("Michigan State University", "East Lansing", "MI", "https://msu.edu", "171100", "05hs6h993", 1, [
         ["College of Engineering", "https://engineering.msu.edu/faculty"],

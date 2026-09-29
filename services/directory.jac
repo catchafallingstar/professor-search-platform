@@ -1,11 +1,7 @@
-"""Read endpoints: professor search, filter options, and full profile."""
+"""Public directory endpoints (no sign-in needed). Data lives in MongoDB (services/store.py)."""
 
-import services.fetchers as fx;
-import from services.models {
-    DataRoot, Institution, Professor, FacultyPublicationAnchor, Paper, Subfield,
-    Grant, HiringSignal, HasInstitution, HasProfessor, HasAnchor, Authored,
-    HasSubfield, HasGrant, HasHiringSignal, get_data_root, normalize_name
-}
+import services.store as st;
+import services.pipe as pipe;
 
 obj ProfessorSummary {
     has id: str = "",
@@ -92,124 +88,19 @@ obj ProfessorDetail {
         last_openalex_update: str = "";
 }
 
-def _paper_subfields(paper: Paper) -> list[str] {
-    return [s.name for s in [paper ->:HasSubfield:->]];
+def _flag(v: any) -> bool {
+    # REST callers sometimes send "False"/"True" strings.
+    return v is True or str(v).lower() == "true";
 }
 
-def _recent_subfields(p: Professor) -> list[str] {
-    out: list[str] = [];
-    for paper in [p ->:Authored:->] {
-        for s in _paper_subfields(paper) {
-            if s not in out {
-                out.append(s);
-            }
-        }
-    }
-    out.sort();
-    return out;
-}
-
-def _hiring_quote(p: Professor) -> str {
-    for s in [p ->:HasHiringSignal:->] {
-        if s.quote {
-            return s.quote;
-        }
-    }
-    return "";
-}
-
-def:pub search_professors(
-    query: str = "",
-    university: str = "",
-    department: str = "",
-    subfield: str = "",
-    has_grant: bool = False,
-    has_hiring: bool = False
-) -> list[ProfessorSummary] {
-    # Free-text search across name, university, department, research field and subfield.
-    # Every word must appear somewhere (case/accent-insensitive), e.g. "michigan robotics".
-    # Defaults can arrive as the strings "False"/"True" from REST callers; only real truthy values filter.
-    has_grant = has_grant is True or str(has_grant).lower() == "true";
-    has_hiring = has_hiring is True or str(has_hiring).lower() == "true";
-    data = get_data_root();
-    words = [w for w in normalize_name(query).split() if w];
-    results: list[ProfessorSummary] = [];
-    for inst in [data ->:HasInstitution:->] {
-        if university and inst.name != university {
-            continue;
-        }
-        inst_text = normalize_name(inst.name + " " + inst.city + " " + inst.state);
-        for p in [inst ->:HasProfessor:->] {
-            if len(words) > 0 {
-                hay = p.search_text or normalize_name(" | ".join([p.name, p.title, p.department] + p.cached_fields + p.cached_subfields));
-                hay = hay + " | " + inst_text;
-                if not all([w in hay for w in words]) {
-                    continue;
-                }
-            }
-            if department and p.department != department {
-                continue;
-            }
-            subs = p.cached_subfields;
-            if subfield and subfield not in subs and subfield not in p.cached_fields {
-                continue;
-            }
-            grants = p.cached_grant_count;
-            if has_grant and grants == 0 {
-                continue;
-            }
-            hiring = p.cached_has_hiring;
-            if has_hiring and not hiring {
-                continue;
-            }
-            results.append(
-                ProfessorSummary(
-                    id=jid(p), name=p.name, title=p.title, department=p.department,
-                    university=inst.name, subfields=subs, fields=p.cached_fields, grant_count=grants,
-                    has_hiring=hiring, match_status=p.match_status
-                )
-            );
-        }
-    }
-    results.sort(key=lambda (r: ProfessorSummary) -> str { return r.name; });
-    return results;
-}
-
-# In-memory search index: walking ~2000 professor nodes on every keystroke took 10-100s
-# while the pipeline was busy. Rebuilt at most once a minute; filtering is then pure Python.
-glob _SEARCH_CACHE: dict = {"t": 0.0, "rows": []};
-
-def reset_search_cache() -> None {
-    # Called after bulk imports so new professors appear in search immediately.
-    _SEARCH_CACHE["t"] = 0.0;
-}
-
-def _search_rows() -> list {
-    import time;
-    now = time.time();
-    if now - float(_SEARCH_CACHE["t"]) < 600 and len(_SEARCH_CACHE["rows"]) > 0 {
-        return _SEARCH_CACHE["rows"];
-    }
-    rows: list = [];
-    for inst in [get_data_root() ->:HasInstitution:->] {
-        inst_text = normalize_name(inst.name + " " + inst.city + " " + inst.state);
-        for p in [inst ->:HasProfessor:->] {
-            hay = p.search_text or normalize_name(" | ".join([p.name, p.title, p.department] + p.cached_fields + p.cached_subfields));
-            rows.append({
-                "hay": hay + " | " + inst_text,
-                "summary": ProfessorSummary(
-                    id=jid(p), name=p.name, title=p.title, department=p.department,
-                    university=inst.name, subfields=p.cached_subfields, fields=p.cached_fields,
-                    grant_count=p.cached_grant_count, has_hiring=p.cached_has_hiring,
-                    match_status=p.match_status
-                )
-            });
-        }
-    }
-    rows.sort(key=lambda (r: dict) -> str { return r["summary"].name; });
-    _SEARCH_CACHE["rows"] = rows;
-    _SEARCH_CACHE["t"] = now;
-    return rows;
+def _summary(r: dict) -> ProfessorSummary {
+    return ProfessorSummary(
+        id=str(r.get("id", "")), name=str(r.get("name", "")), title=str(r.get("title", "")),
+        department=str(r.get("department", "")), university=str(r.get("university", "")),
+        subfields=list(r.get("subfields") or []), fields=list(r.get("fields") or []),
+        grant_count=int(r.get("grant_count") or 0), has_hiring=bool(r.get("has_hiring")),
+        match_status=str(r.get("match_status", ""))
+    );
 }
 
 def:pub search_professors_page(
@@ -222,109 +113,82 @@ def:pub search_professors_page(
     offset: int = 0,
     limit: int = 50
 ) -> SearchResults {
-    # One page of results (the Search page loads 50, then 20 more per "Load more").
-    fx.note_search();   # background pipeline pauses while people are searching
-    has_grant = has_grant is True or str(has_grant).lower() == "true";
-    has_hiring = has_hiring is True or str(has_hiring).lower() == "true";
-    words = [w for w in normalize_name(query).split() if w];
-    everything: list[ProfessorSummary] = [];
-    for r in _search_rows() {
-        s: ProfessorSummary = r["summary"];
-        if university and s.university != university { continue; }
-        if department and s.department != department { continue; }
-        if subfield and subfield not in s.subfields and subfield not in s.fields { continue; }
-        if has_grant and s.grant_count == 0 { continue; }
-        if has_hiring and not s.has_hiring { continue; }
-        if len(words) > 0 and not all([w in r["hay"] for w in words]) { continue; }
-        everything.append(s);
-    }
-    start = max(0, int(offset));
-    size = max(1, min(int(limit), 200));
-    return SearchResults(items=everything[start:start + size], total=len(everything), offset=start);
+    # One page of results: the Search page loads 50, then 20 more per "Load more".
+    pipe.note_search();   # the background pipeline pauses while people are searching
+    res = st.search(query, university, department, subfield, _flag(has_grant), _flag(has_hiring), offset, limit) as dict;
+    return SearchResults(
+        items=[_summary(r) for r in (res["items"] as list[dict])], total=int(res["total"]), offset=int(res["offset"])
+    );
+}
+
+def:pub search_professors(
+    query: str = "",
+    university: str = "",
+    department: str = "",
+    subfield: str = "",
+    has_grant: bool = False,
+    has_hiring: bool = False
+) -> list[ProfessorSummary] {
+    # Kept for API compatibility: first 200 matches.
+    return search_professors_page(query, university, department, subfield, has_grant, has_hiring, 0, 200).items;
 }
 
 def:pub get_filter_options() -> FilterOptions {
-    data = get_data_root();
-    opts = FilterOptions();
-    for inst in [data ->:HasInstitution:->] {
-        if inst.name not in opts.universities {
-            opts.universities.append(inst.name);
-        }
-        for p in [inst ->:HasProfessor:->] {
-            if p.department and p.department not in opts.departments {
-                opts.departments.append(p.department);
-            }
-            for s in p.cached_subfields {
-                if s not in opts.subfields {
-                    opts.subfields.append(s);
-                }
-            }
-            for f in p.cached_fields {
-                if f not in opts.fields {
-                    opts.fields.append(f);
-                }
-            }
-        }
-    }
-    opts.universities.sort();
-    opts.departments.sort();
-    opts.subfields.sort();
-    opts.fields.sort();
-    return opts;
+    o = st.filter_options() as dict;
+    return FilterOptions(
+        universities=o["universities"], departments=o["departments"], subfields=o["subfields"], fields=o["fields"]
+    );
 }
 
 def:pub get_professor_profile(professor_id: str) -> ProfessorDetail | None {
-    target = jobj(professor_id);
-    if not isinstance(target, Professor) {
+    found = st.get_professor(professor_id);
+    if found is None {
         return None;
     }
-    p = target as Professor;
-    insts = [p <-:HasProfessor:<-];
-    uni = insts[0].name if len(insts) > 0 else "";
-    ustate = insts[0].state if len(insts) > 0 else "";
+    p: dict = found as dict;
+    inst_raw = st.get_institution(str(p.get("institution_id", "")));
+    inst: dict = (inst_raw as dict) if inst_raw is not None else {};
+    papers: list[PaperView] = [];
+    for x in (st.papers_by_ids(p.get("paper_ids") or []) as list[dict]) {
+        papers.append(PaperView(
+            id=str(x.get("id", "")), title=str(x.get("title", "")), year=int(x.get("publication_year") or 0),
+            publication_date=str(x.get("publication_date", "")), source_name=str(x.get("source_name", "")),
+            doi=str(x.get("doi", "")), url=str(x.get("paper_url", "")), citation_count=int(x.get("citation_count") or 0),
+            subfields=[str(x.get("subfield"))] if x.get("subfield") else []
+        ));
+    }
+    papers.sort(key=lambda (v: PaperView) -> str { return v.publication_date; }, reverse=True);
+    roles: dict = {};
+    for g in (p.get("grants") or []) { roles[str(g.get("id", ""))] = str(g.get("role", "")); }
+    grants: list[GrantView] = [];
+    for g2 in (st.grants_by_ids(list(roles.keys())) as list[dict]) {
+        grants.append(GrantView(
+            id=str(g2.get("id", "")), title=str(g2.get("title", "")), funder_name=str(g2.get("funder_name", "")),
+            funder_award_id=str(g2.get("funder_award_id", "")), role=roles.get(str(g2.get("id", "")), ""),
+            amount=float(g2.get("amount") or 0.0), currency=str(g2.get("currency", "")),
+            start_date=str(g2.get("start_date", "")), end_date=str(g2.get("end_date", "")),
+            url=str(g2.get("landing_page_url", ""))
+        ));
+    }
     anchors = [
         AnchorView(
-            title=a.title, doi=a.doi, year=a.publication_year, url=a.url,
-            openalex_work_id=a.openalex_work_id, used_for_match=a.used_for_match
+            title=str(a.get("title", "")), doi=str(a.get("doi", "")), year=int(a.get("publication_year") or 0),
+            url=str(a.get("url", "")), openalex_work_id=str(a.get("openalex_work_id", "")),
+            used_for_match=bool(a.get("used_for_match"))
         )
-        for a in [p ->:HasAnchor:->]
+        for a in (p.get("anchors") or [])
     ];
-    papers = [
-        PaperView(
-            id=jid(x), title=x.title, year=x.publication_year, publication_date=x.publication_date,
-            source_name=x.source_name, doi=x.doi, url=x.paper_url, citation_count=x.citation_count,
-            subfields=_paper_subfields(x)
-        )
-        for x in [p ->:Authored:->]
-    ];
-    papers.sort(key=lambda (v: PaperView) -> str { return v.publication_date; }, reverse=True);
-    grants: list[GrantView] = [];
-    for g2 in [p ->:HasGrant:->] {
-        role = "";
-        for e in [edge p ->:HasGrant:-> g2] {
-            role = e.role;
-        }
-        grants.append(
-            GrantView(
-                id=jid(g2), title=g2.title, funder_name=g2.funder_name,
-                funder_award_id=g2.funder_award_id, role=role, amount=g2.amount,
-                currency=g2.currency, start_date=g2.start_date, end_date=g2.end_date,
-                url=g2.landing_page_url
-            )
-        );
-    }
-    sigs = [p ->:HasHiringSignal:->];
-    sig: HiringSignal | None = sigs[0] if len(sigs) > 0 else None;
+    h: dict = p.get("hiring") or {};
     return ProfessorDetail(
-        id=jid(p), name=p.name, title=p.title, department=p.department,
-        university=uni, university_state=ustate, faculty_url=p.faculty_url,
-        lab_url=p.lab_url, orcid=p.orcid, openalex_author_id=p.openalex_author_id,
-        match_status=p.match_status, match_method=p.match_method, match_note=p.match_note,
-        subfields=_recent_subfields(p), anchors=anchors, papers=papers, grants=grants,
-        hiring_quote=sig.quote if sig else "",
-        hiring_source_url=sig.source_url if sig else "",
-        hiring_source_title=sig.source_title if sig else "",
-        hiring_last_checked=sig.last_checked if sig else "",
-        last_openalex_update=p.last_openalex_update
+        id=str(p["id"]), name=str(p.get("name", "")), title=str(p.get("title", "")),
+        department=str(p.get("department", "")), university=str(p.get("university", "")),
+        university_state=str(inst.get("state", "")),
+        faculty_url=str(p.get("faculty_url", "")), lab_url=str(p.get("lab_url", "")), orcid=str(p.get("orcid", "")),
+        openalex_author_id=str(p.get("openalex_author_id", "")), match_status=str(p.get("match_status", "")),
+        match_method=str(p.get("match_method", "")), match_note=str(p.get("match_note", "")),
+        subfields=list(p.get("subfields") or []), anchors=anchors, papers=papers, grants=grants,
+        hiring_quote=str(h.get("quote", "") or ""), hiring_source_url=str(h.get("source_url", "") or ""),
+        hiring_source_title=str(h.get("source_title", "") or ""), hiring_last_checked=str(h.get("last_checked", "") or ""),
+        last_openalex_update=str(p.get("last_openalex_update", ""))
     );
 }
