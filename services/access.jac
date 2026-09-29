@@ -13,6 +13,7 @@ There is no "first account becomes staff" bootstrap any more.
 import os;
 import secrets;
 import services.identity as ident;
+import services.store as st;
 
 glob OWNER_EMAIL: str = "bxybai@umich.edu";
 
@@ -43,6 +44,19 @@ def _registry() -> StaffRegistry {
     return reg;
 }
 
+# Staff emails live in MongoDB (settings "staff_emails") so they survive sandbox resets.
+def _staff() -> list[str] {
+    try {
+        return [str(x) for x in (st.get_setting("staff_emails", []) or [])];
+    } except Exception {
+        return [];
+    }
+}
+
+def _set_staff(emails: list[str]) -> None {
+    st.set_setting("staff_emails", emails);
+}
+
 def _is_guest() -> bool {
     return jid(root) == jid(root.shared);
 }
@@ -61,7 +75,7 @@ def is_owner_caller() -> bool {
 def is_staff_caller() -> bool {
     e = caller_email();
     if not e { return False; }
-    return e == OWNER_EMAIL or e in _registry().emails;
+    return e == OWNER_EMAIL or e in _staff();
 }
 
 def require_staff() -> None {
@@ -83,7 +97,7 @@ def:priv whoami(email: str = "") -> WhoAmI {
     return WhoAmI(
         logged_in=True,
         email=e,
-        is_staff=bool(e) and (e == OWNER_EMAIL or e in _registry().emails),
+        is_staff=bool(e) and (e == OWNER_EMAIL or e in _staff()),
         is_owner=bool(e) and e == OWNER_EMAIL
     );
 }
@@ -97,36 +111,34 @@ def:priv promote_staff(email: str) -> AccessResult {
     if e == OWNER_EMAIL {
         return AccessResult(message="That is the owner account; it always has staff access.");
     }
-    reg = _registry();
-    if e in reg.emails {
+    cur = _staff();
+    if e in cur {
         return AccessResult(message=f"{e} is already staff.");
     }
-    reg.emails = reg.emails + [e];
+    _set_staff(cur + [e]);
     return AccessResult(message=f"{e} is now staff. It takes effect the next time they sign in or reload.");
 }
 
 def:priv revoke_staff(email: str) -> AccessResult {
     require_owner();
     e = email.strip().lower();
-    reg = _registry();
-    if e not in reg.emails {
+    cur = _staff();
+    if e not in cur {
         return AccessResult(ok=False, message=f"{e} is not a staff account.");
     }
-    reg.emails = [x for x in reg.emails if x != e];
+    _set_staff([x for x in cur if x != e]);
     return AccessResult(message=f"{e} no longer has staff access.");
 }
 
 def:priv list_staff() -> list[str] {
     require_staff();
-    return [OWNER_EMAIL + " (owner)"] + [e for e in _registry().emails if e and e != OWNER_EMAIL];
+    return [OWNER_EMAIL + " (owner)"] + [e for e in _staff() if e and e != OWNER_EMAIL];
 }
 
 def:priv reset_staff_registry() -> AccessResult {
-    # Owner-only cleanup: drops every staff grant (including any created by the old bootstrap).
+    # Owner-only cleanup: drops every staff grant.
     require_owner();
-    reg = _registry();
-    reg.emails = [];
-    reg.root_ids = [];
+    _set_staff([]);
     return AccessResult(message="All staff grants removed. Only the owner has staff access now.");
 }
 

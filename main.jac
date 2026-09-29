@@ -7,8 +7,8 @@ import from services.queue {
     InstitutionStatus, StepResult, WorkerState, ConfigStatus
 }
 import from services.directory {
-    search_professors, get_filter_options, get_professor_profile,
-    ProfessorSummary, FilterOptions, ProfessorDetail, PaperView, GrantView, AnchorView
+    search_professors, search_professors_page, get_filter_options, get_professor_profile,
+    ProfessorSummary, SearchResults, FilterOptions, ProfessorDetail, PaperView, GrantView, AnchorView
 }
 import from services.access { whoami, promote_staff, revoke_staff, list_staff, reset_staff_registry, WhoAmI, AccessResult }
 import from services.history {

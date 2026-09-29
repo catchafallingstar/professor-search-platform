@@ -198,22 +198,21 @@ def restore_then_resume():
         except Exception as e:
             print(f"[auth] owner bootstrap failed: {e}")
         threading.Thread(target=_accounts_backup_loop, daemon=True).start()
-        autostart = os.environ.get("PIPELINE_AUTOSTART", "1").strip() not in ("0", "false", "no")
-        actions = ("restore", "reindex", "load_priority") if autostart else ("restore", "reindex")
-        for action in actions:
-            for attempt in range(12):   # retry ~2 min: early calls can 500 while the server warms up
-                try:
-                    r = call_internal("internal_action", {"action": action, "arg": ""}, timeout=900)
-                    print(f"[persist] {action}: {(r or {}).get('message', '')}")
-                    break
-                except Exception as e:
-                    if attempt == 11:
-                        print(f"[persist] {action} failed after retries: {e}")
-                    time.sleep(10)
-        if autostart:
-            start_worker()
-        else:
-            resume_if_flagged()
+        # The directory lives in MongoDB (services/store.py): nothing to restore. Load the IPEDS
+        # university list if the database is empty, then start the pipeline worker.
+        try:
+            from services import store as st, pipe
+            st.db()
+            if st.count_institutions() == 0:
+                year, n, new = pipe.load_ipeds()
+                pipe.log(f"Loaded {n} research universities from IPEDS {year}.")
+            print(f"[store] MongoDB directory: {st.overview()}")
+            autostart = os.environ.get("PIPELINE_AUTOSTART", "1").strip() not in ("0", "false", "no")
+            if autostart and st.get_setting("worker_running", True) is not False:
+                pipe.start()
+                pipe.log("Auto-processing started.")
+        except Exception as e:
+            print(f"[store] MongoDB directory unavailable: {e}")
     threading.Thread(target=_go, daemon=True).start()
 
 
@@ -473,12 +472,18 @@ def fetch_page(url):
         blocked = True
         print(f"[fetch] {url} failed: {e}")
     if blocked or not out["ok"]:
-        try:
-            title, text = _via_reader(url)
-            if len(text) > 200 and not _blocked(text):
-                out.update(url=url, title=title, text=text, ok=True, via="reader")
-        except Exception as e:
-            print(f"[fetch] reader for {url} failed: {e}")
+        for attempt in range(3):   # the reader service rate-limits bursts (HTTP 429)
+            try:
+                title, text = _via_reader(url)
+                if len(text) > 200 and not _blocked(text):
+                    out.update(url=url, title=title, text=text, ok=True, via="reader")
+                break
+            except Exception as e:
+                if "429" in str(e) and attempt < 2:
+                    time.sleep(8 * (attempt + 1))
+                    continue
+                print(f"[fetch] reader for {url} failed: {e}")
+                break
     return out
 
 
@@ -640,9 +645,17 @@ def wordpress_faculty(site_url, department):
     for page in range(1, 11):
         url = (f"{base}/wp-json/wp/v2/people?per_page=100&page={page}"
                "&_fields=title,link,meta.umcoecm_people_primary_title,meta.umcoecm_people_sort_key")
-        try:
-            data = _get_json_any(url)
-        except Exception:
+        data = None
+        for attempt in range(3):   # the reader service rate-limits bursts (HTTP 429)
+            try:
+                data = _get_json_any(url)
+                break
+            except Exception as e:
+                if "429" in str(e):
+                    time.sleep(8 * (attempt + 1))
+                    continue
+                break
+        if data is None:
             break
         if not isinstance(data, list) or not data:
             break
@@ -666,10 +679,11 @@ def wordpress_faculty(site_url, department):
 
 def extract_faculty_any(url, department):
     """Everything we know how to read for one directory URL: page parser first, then the
-    WordPress people feed when the page itself is rendered by JavaScript."""
+    WordPress people feed when the page itself is rendered by JavaScript or only shows
+    part of the list (many UMich engineering pages load people dynamically)."""
     page = fetch_page(url)
     rows = extract_faculty_rules(page, department)
-    if len(rows) < 5:
+    if len(rows) < 40:
         try:
             wp = wordpress_faculty(url, department)
             if len(wp) > len(rows):

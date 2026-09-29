@@ -103,6 +103,10 @@ def crawl(inst):
     report = []
     for dept, url in dirs:
         rows, via = fx.extract_faculty_any(url, dept)
+        if not rows:
+            # A bot check can be temporary (it tightens after bursts): wait and try once more.
+            time.sleep(20)
+            rows, via = fx.extract_faculty_any(url, dept)
         n = 0
         for r in rows[:MAX_PER_DEPARTMENT]:
             if st.add_professor(inst, r["name"], r["title"], r["department"] or dept, r["profile_url"] or url):
@@ -367,6 +371,18 @@ def requeue(states=("NO_FACULTY_FOUND", "FAILED")):
     for inst in queue():
         if inst.get("pipeline_state") in states:
             st.update_institution(inst["id"], {"pipeline_state": "QUEUED", "pipeline_note": ""})
+            n += 1
+    return n
+
+
+def recrawl_thin(min_found=5):
+    """Re-queue universities where at least one known directory page yielded fewer than
+    `min_found` professors (bot checks, temporary errors). Existing professors are kept."""
+    n = 0
+    for inst in queue():
+        report = inst.get("dirs_checked") or []
+        if report and any(int(r.get("found", 0)) < min_found for r in report) and inst.get("pipeline_state") in ("PROCESSING", "DONE", "NO_FACULTY_FOUND"):
+            st.update_institution(inst["id"], {"pipeline_state": "CRAWLING"})
             n += 1
     return n
 

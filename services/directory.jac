@@ -1,4 +1,5 @@
-"""Public directory endpoints (no sign-in needed). Data lives in MongoDB (services/store.py)."""
+"""Public directory endpoints (no sign-in needed): anyone can search and open profiles.
+Data lives in MongoDB (services/store.py)."""
 
 import services.store as st;
 import services.pipe as pipe;
