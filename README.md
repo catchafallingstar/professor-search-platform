@@ -1,4 +1,5 @@
 # Road to Research
+Live on : https://preview-jac-sbx-38b138156c9546d881e84ebecc5fd447.jachammer.app/
 
 **Helping students find professors, understand their recent research, discover funding, and identify current research opportunities in one place.**
 
@@ -6,7 +7,7 @@ Road to Research is a professor discovery platform built for **JacHacks A2Tech36
 
 ## Links
 
-- **Presentation / Intro Slides:** [Road to Research on Canva](https://www.canva.com/design/DAHWZpC00ss/5_aAtbbo6jsLTPlsyyv0Gg/edit)
+- **Presentation / Intro Slides:** [Road to Research on Canva](https://canva.link/kha6sadbovr6n2u)
 - **Repository:** [github.com/catchafallingstar/professor-search-platform](https://github.com/catchafallingstar/professor-search-platform)
 
 ## Intro Slides
@@ -25,7 +26,7 @@ The slides cover:
 - Why Jac's graph model fits universities, professors, papers, subfields, grants, and hiring signals
 - Deployment through JacHammer
 
-**Slides:** [Open the Road to Research presentation](https://www.canva.com/design/DAHWZpC00ss/5_aAtbbo6jsLTPlsyyv0Gg/edit)
+**Slides:** [Open the Road to Research presentation](https://canva.link/kha6sadbovr6n2u)
 
 ---
 
