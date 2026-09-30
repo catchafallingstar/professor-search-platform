@@ -226,9 +226,27 @@ def worker_running():
 
 
 def llm_configured():
-    """True when an LLM key is available (needed for faculty-page extraction and hiring research)."""
-    return bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
-                or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+    """True when an LLM is available (needed for faculty-page extraction and hiring research):
+    a cloud key, or a local Ollama model (LLM_MODEL=ollama/... plus OLLAMA_API_BASE)."""
+    ollama = os.environ.get("LLM_MODEL", "").startswith("ollama") and bool(os.environ.get("OLLAMA_API_BASE"))
+    return ollama or bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+                          or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+
+
+def llm_reachable():
+    """For Ollama: is the tunnel to the other computer up? Returns (ok, message)."""
+    base = os.environ.get("OLLAMA_API_BASE", "").rstrip("/")
+    if not base:
+        return (llm_configured(), "cloud model" if llm_configured() else "no LLM configured")
+    try:
+        with urllib.request.urlopen(urllib.request.Request(base + "/api/tags", headers={"User-Agent": "curl/8.5.0"}), timeout=10) as r:
+            models = [m.get("name") for m in json.loads(r.read().decode()).get("models", [])]
+        want = os.environ.get("LLM_MODEL", "").replace("ollama/", "").replace("ollama_chat/", "")
+        if want and want not in models and want + ":latest" not in models:
+            return (False, f"Ollama is reachable but model '{want}' is not pulled (have: {', '.join(models[:8])})")
+        return (True, f"Ollama reachable, {len(models)} models")
+    except Exception as e:
+        return (False, f"Ollama not reachable at {base}: {str(e)[:120]}")
 
 
 # ---------------- OpenAlex credential pool (see services/keypool.py) ----------------

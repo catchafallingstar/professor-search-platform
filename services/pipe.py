@@ -297,9 +297,74 @@ def discover_grants(p, inst, award_ids):
     return linked
 
 
+def _llm_mods():
+    """The Jac by-llm modules (crawler.jac, hiring.jac); None when no LLM is configured."""
+    if not fx.llm_configured():
+        return None
+    try:
+        from services import crawler, hiring
+        return crawler, hiring
+    except Exception as e:
+        print(f"[pipeline] LLM modules unavailable: {e}")
+        return None
+
+
+def enrich_profile(p):
+    """Faculty profile page -> lab URL, homepage, ORCID and up to 3 listed papers (anchors
+    used to confirm the OpenAlex identity). Needs the LLM; skipped silently without it."""
+    mods = _llm_mods()
+    if not mods or p.get("profile_extracted") or not p.get("faculty_url"):
+        return {}
+    crawler = mods[0]
+    page = crawler.fetch_page(p["faculty_url"])
+    info = crawler.extract_profile(page, p["name"])
+    out = {"profile_extracted": True}
+    if info is None:
+        return out
+    if info.lab_url and not p.get("lab_url"):
+        out["lab_url"] = info.lab_url
+    if info.personal_url and not p.get("personal_url"):
+        out["personal_url"] = info.personal_url
+    if info.orcid and not p.get("orcid"):
+        out["orcid"] = fx.short_id(info.orcid)
+    anchors = [{"title": pub.title, "doi": pub.doi, "publication_year": pub.year, "url": pub.url}
+               for pub in (info.publications or [])[:3] if pub.title]
+    if anchors and not p.get("anchors"):
+        out["anchors"] = anchors
+    return out
+
+
+def check_hiring(p, inst):
+    """Hiring statement: the professor's own pages first (quote must be verbatim on the fetched
+    page), then the research LLM (accepted only if the quote is found on its source page).
+    Returns the hiring dict to store; quote "" means "no current statement found"."""
+    mods = _llm_mods()
+    if not mods:
+        return None
+    crawler, hiring = mods
+    ts = st.now_iso()
+    for url in (p.get("lab_url"), p.get("personal_url"), p.get("faculty_url")):
+        if not url:
+            continue
+        page = crawler.fetch_page(url)
+        q = crawler.find_hiring_quote(page, p["name"])
+        if q:
+            return {"quote": q, "source_url": page.url, "source_title": page.title or "Faculty page",
+                    "date_found": ts, "last_checked": ts}
+    res = hiring.research_hiring(p["name"], inst["name"], p.get("department", ""), p.get("faculty_url", ""), p.get("lab_url", ""))
+    if res.quote and res.source_url:
+        src = crawler.fetch_page(res.source_url)
+        if crawler.quote_on_page(res.quote, src):
+            return {"quote": res.quote, "source_url": src.url, "source_title": res.source_title or src.title,
+                    "date_found": ts, "last_checked": ts}
+    old = p.get("hiring") or {}
+    return {"quote": "", "source_url": "", "source_title": "", "date_found": old.get("date_found", ""), "last_checked": ts}
+
+
 def process_professor(p, inst):
     inst_oid = resolve_institution(inst)
-    fields = {}
+    fields = enrich_profile(p)
+    p = dict(p, **fields)
     if not p.get("openalex_author_id"):
         fields.update(match(p, inst_oid))
     author = fields.get("openalex_author_id") or p.get("openalex_author_id")
@@ -313,6 +378,9 @@ def process_professor(p, inst):
         if GRANTS():
             grants = discover_grants(dict(q, orcid=fields.get("orcid") or p.get("orcid")), inst, awards)
             fields.update(grants=grants, grant_count=len(grants), last_grant_update=st.now_iso())
+    h = check_hiring(dict(p, **fields), inst)
+    if h is not None:
+        fields.update(hiring=h, has_hiring=bool(h["quote"]), last_hiring_update=h["last_checked"])
     fields["pipeline_done"] = True
     merged = dict(p, **fields)
     fields["search_text"] = st.search_text_for(merged) + " | " + st.normalize_name(inst.get("city", "") + " " + inst.get("state", ""))
@@ -363,7 +431,44 @@ def step():
             return f"{inst['name']}: imported {added} professors from {len(report)} directory pages."
         if limited:
             raise fx.RateLimited(fx.rate_limit_status()["message"])
+        if maintenance_due():
+            n = start_maintenance()
+            return f"Monthly maintenance started: re-checking {n} universities (faculty lists, papers, hiring)."
         return ""
+
+
+MAINTENANCE_DAYS = lambda: int(os.environ.get("MAINTENANCE_DAYS", "30") or 30)
+
+
+def maintenance_due():
+    last = st.get_setting("last_maintenance", "")
+    if not last:
+        # first full pass is still running (or never finished): start the 30-day clock at that point
+        if not st.get_setting("first_pass_done"):
+            if st.count_institutions({"pipeline_state": {"$in": ["QUEUED", "CRAWLING", "PROCESSING"]}}) == 0:
+                st.set_setting("first_pass_done", st.now_iso())
+                st.set_setting("last_maintenance", st.now_iso())
+            return False
+        return False
+    try:
+        age = time.time() - time.mktime(time.strptime(last[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return True
+    return age > MAINTENANCE_DAYS() * 86400
+
+
+def start_maintenance():
+    """Monthly refresh: re-read every faculty directory (new hires, departures), then re-run
+    papers, subfields and hiring for every professor. Existing data stays visible meanwhile."""
+    st.set_setting("maintenance_started", st.now_iso())
+    n = 0
+    for inst in queue():
+        if inst.get("pipeline_state") in ("DONE", "PROCESSING", "NO_FACULTY_FOUND"):
+            st.update_institution(inst["id"], {"pipeline_state": "CRAWLING"})
+            n += 1
+    st.db().professors.update_many({}, {"$set": {"pipeline_done": False}})
+    st.set_setting("last_maintenance", st.now_iso())
+    return n
 
 
 def requeue(states=("NO_FACULTY_FOUND", "FAILED")):

@@ -11,7 +11,7 @@ import from .ui.table { Table, TableHeader, TableBody, TableRow, TableHead, Tabl
 import from .ui.empty { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription, EmptyContent }
 sv import from ..services.queue {
     load_priority_universities, get_pipeline_status, run_step_as_staff, get_worker_state,
-    set_worker, reset_institution, get_config_status, add_openalex_key,
+    set_worker, reset_institution, get_config_status, add_openalex_key, check_llm, run_maintenance_now,
     InstitutionStatus, StepResult, WorkerState, ConfigStatus
 }
 import from .OpenAlexKeys { OpenAlexKeys }
@@ -48,6 +48,7 @@ def:pub PipelineAdmin() -> JsxElement {
         config: ConfigStatus | None = None,
         loading: bool = True,
         busy: bool = False,
+        llm_msg: str = "",
         error: str = "";
 
     async def refresh() -> None {
@@ -85,6 +86,18 @@ def:pub PipelineAdmin() -> JsxElement {
         busy = False;
     }
 
+    async def test_llm() -> None {
+        busy = True;
+        try { r: StepResult = await check_llm(); llm_msg = r.message; } except Exception as e { llm_msg = str(e); }
+        busy = False;
+    }
+
+    async def maintain() -> None {
+        busy = True;
+        try { r: StepResult = await run_maintenance_now(); llm_msg = r.message; await refresh(); } except Exception as e { llm_msg = str(e); }
+        busy = False;
+    }
+
     async def reset(iid: str) -> None {
         try { await reset_institution(iid); await refresh(); } except Exception as e { error = str(e); }
     }
@@ -115,7 +128,7 @@ def:pub PipelineAdmin() -> JsxElement {
         <div className="flex flex-wrap items-end justify-between gap-4">
             <div className="flex flex-col gap-1">
                 <h1 className="text-2xl font-semibold tracking-tight">{"Ingestion pipeline"}</h1>
-                <p className="text-sm text-muted-foreground">{"Michigan first, then surrounding states, then the top 30. Each university finishes completely, hiring included, before the next starts. After that, more US universities are queued from OpenAlex."}</p>
+                <p className="text-sm text-muted-foreground">{"All IPEDS research universities (R1 and R2): Michigan first, then surrounding states, then the rest. Everything is saved to MongoDB as it runs; a full refresh runs every 30 days."}</p>
             </div>
             <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={step} disabled={busy or running or len(rows) == 0}>{"Run one step"}</Button>
@@ -152,11 +165,16 @@ def:pub PipelineAdmin() -> JsxElement {
                         ok={config.openalex_key if config else False}
                         detail={(str(config.keys_available) + " of " + str(config.keys_total + 1) + " credentials usable (keys + no-key pool). Manage them below.") if config else "Manage them below."}
                     />
-                    <ConfigRow label="OPENAI_API_KEY (required)" ok={llm_ok} detail="Reads faculty pages and finds hiring statements." />
+                    <ConfigRow label="LLM (Ollama or a cloud key)" ok={llm_ok} detail="Reads faculty profiles, finds directory pages and hiring statements." />
                     {not llm_ok and <div className="mt-3 flex items-start gap-2 rounded-lg bg-muted pt-2.5 pb-2.5 pl-3 pr-3 text-xs">
                         <HugeiconsIcon icon={Alert01Icon} strokeWidth={2} className="mt-0.5 size-3.5 shrink-0" />
-                        <span>{"Without a key, faculty, papers, subfields and grants are still imported. Hiring checks start once the key is added."}</span>
+                        <span>{"Without an LLM, faculty, papers and subfields are still imported. Set LLM_MODEL and OLLAMA_API_BASE (or a cloud key) to add hiring checks."}</span>
                     </div>}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                        <Button variant="outline" size="sm" onClick={test_llm} disabled={busy}>{"Check LLM connection"}</Button>
+                        <Button variant="outline" size="sm" onClick={maintain} disabled={busy}>{"Run maintenance now"}</Button>
+                    </div>
+                    {llm_msg and <p className="mt-2 text-xs text-muted-foreground">{llm_msg}</p>}
                 </CardContent>
             </Card>
             <Card className="shadow-sm lg:col-span-2">

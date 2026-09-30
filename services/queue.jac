@@ -164,6 +164,21 @@ def:priv get_config_status() -> ConfigStatus {
     );
 }
 
+def:priv check_llm() -> StepResult {
+    # Is the LLM (e.g. Ollama on the owner's computer, via its tunnel URL) reachable right now?
+    require_staff();
+    r = fx.llm_reachable();
+    return StepResult(ok=bool(r[0]), message=str(r[1]));
+}
+
+def:priv run_maintenance_now() -> StepResult {
+    # Start the monthly refresh immediately (faculty lists, papers, subfields, hiring).
+    require_staff();
+    n = int(pipe.start_maintenance());
+    pipe.log(f"Maintenance started by staff: re-checking {n} universities.");
+    return StepResult(message=f"Maintenance started: re-checking {n} universities.");
+}
+
 def:priv list_openalex_keys() -> list[KeyStatus] {
     require_staff();
     return [
