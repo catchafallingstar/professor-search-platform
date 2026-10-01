@@ -41,12 +41,25 @@ LINK_RE = re.compile(r"\[([^\]]{1,120})\]\((https?://[^)\s]+)\)")
 NEWS_RE = re.compile(
     r"/(news|newsroom|stories|story|blog|blogs|posts?|articles?|announcements?|press|press-releases|"
     r"events?|calendar|spotlights?|features?|magazine|media|category|tag|author|feed|student-life|"
-    r"students?/blog|in-the-news)(/|$)|/(19|20)\d\d/\d{1,2}(/|$)|[?&](p|cat|tag)=", re.I)
+    r"students?/blog|in-the-news)(/|$)"
+    r"|/(19|20)\d\d[/-]\d{1,2}([/-]\d{1,2})?(/|-|$)"       # /2024/05/... or /2026-04-08-...
+    r"|[?&](p|cat|tag)=", re.I)
+DIR_WORDS = ("faculty", "people", "directory", "staff", "researchers", "members", "professors")
 
 
 def is_news_like(url):
     p = urllib.parse.urlparse(url or "")
-    return bool(NEWS_RE.search(p.path + ("?" + p.query if p.query else "")))
+    path = p.path
+    if NEWS_RE.search(path + ("?" + p.query if p.query else "")):
+        return True
+    # A directory page's own slug names the page ("faculty", "our-faculty"); an article's slug
+    # tells a story ("for-the-glory-2026-aaas-fellows"). 5+ hyphenated words with none of the
+    # directory words present reads as a headline, not a listing.
+    last = re.sub(r"\.\w+$", "", path.rsplit("/", 1)[-1])
+    words = [w for w in last.split("-") if w]
+    if len(words) >= 5 and not any(w in DIR_WORDS for w in words):
+        return True
+    return False
 
 
 def wordpress_directory_pages(base, dom):
