@@ -115,6 +115,15 @@ def:pub SearchPage() -> JsxElement {
         loading_more = False;
     }
 
+    async def load_options(u: str, d: str) -> None {
+        # Departments follow the university; fields/subfields follow university + department.
+        try {
+            options = await get_filter_options(u, d);
+        } except Exception {
+            options = None;
+        }
+    }
+
     loc = useLocation();
 
     async can with entry {
@@ -128,17 +137,14 @@ def:pub SearchPage() -> JsxElement {
         h0: bool = p.get("hiring") == "1";
         query = q0; university = u0; department = d0; subfield = s0; has_grant = g0; has_hiring = h0;
         await run_search(q0, u0, d0, s0, g0, h0);
-        try {
-            options = await get_filter_options();
-        } except Exception {
-            options = None;
-        }
+        await load_options(u0, d0);
     }
 
     def reset() -> None {
         query = ""; university = ""; department = ""; subfield = "";
         has_grant = False; has_hiring = False;
         run_search("", "", "", "", False, False);
+        load_options("", "");
     }
 
     unis: list[str] = options.universities if options else [];
@@ -170,8 +176,12 @@ def:pub SearchPage() -> JsxElement {
                     <div className="flex flex-col gap-1.5">
                         <Label htmlFor="f-uni">{"University"}</Label>
                         <NativeSelect id="f-uni" className="w-full" value={university} onChange={lambda (e: ChangeEvent) {
+                            # a new university has its own departments and research areas
                             university = e.target.value;
-                            run_search(query, e.target.value, department, subfield, has_grant, has_hiring);
+                            department = "";
+                            subfield = "";
+                            run_search(query, e.target.value, "", "", has_grant, has_hiring);
+                            load_options(e.target.value, "");
                         }}>
                             <NativeSelectOption value="">{"All universities"}</NativeSelectOption>
                             {for u in unis { <NativeSelectOption key={u} value={u}>{u}</NativeSelectOption> }}
@@ -181,7 +191,9 @@ def:pub SearchPage() -> JsxElement {
                         <Label htmlFor="f-dept">{"Department"}</Label>
                         <NativeSelect id="f-dept" className="w-full" value={department} onChange={lambda (e: ChangeEvent) {
                             department = e.target.value;
-                            run_search(query, university, e.target.value, subfield, has_grant, has_hiring);
+                            subfield = "";
+                            run_search(query, university, e.target.value, "", has_grant, has_hiring);
+                            load_options(university, e.target.value);
                         }}>
                             <NativeSelectOption value="">{"All departments"}</NativeSelectOption>
                             {for d in depts { <NativeSelectOption key={d} value={d}>{d}</NativeSelectOption> }}

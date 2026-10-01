@@ -134,8 +134,8 @@ def:pub search_professors(
     return search_professors_page(query, university, department, subfield, has_grant, has_hiring, 0, 200).items;
 }
 
-def:pub get_filter_options() -> FilterOptions {
-    o = st.filter_options() as dict;
+def:pub get_filter_options(university: str = "", department: str = "") -> FilterOptions {
+    o = st.filter_options(university, department) as dict;
     return FilterOptions(
         universities=o["universities"], departments=o["departments"], subfields=o["subfields"], fields=o["fields"]
     );

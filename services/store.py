@@ -282,10 +282,17 @@ def search(query="", university="", department="", subfield="", has_grant=False,
     return {"items": out[start:start + size], "total": len(out), "offset": start}
 
 
-def filter_options():
+def filter_options(university="", department=""):
+    """Universities: always all. Departments: only those the selected university has.
+    Fields/subfields: only those of professors in the selected university + department."""
     rows = search_rows()
     unis = sorted({r.get("university", "") for r in rows if r.get("university")})
+    if university:
+        rows = [r for r in rows if r.get("university") == university]
     depts = sorted({r.get("department", "") for r in rows if r.get("department")})
+    dept = normalize_name(department)
+    if dept:
+        rows = [r for r in rows if dept in normalize_name(r.get("department", ""))]
     subs = sorted({s for r in rows for s in (r.get("subfields") or [])})
     flds = sorted({f for r in rows for f in (r.get("fields") or [])})
     return {"universities": unis, "departments": depts, "subfields": subs, "fields": flds}
