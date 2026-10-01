@@ -19,7 +19,7 @@ from services import universities as unis
 WORK = threading.Lock()
 MAX_PER_DEPARTMENT = 200          # safety cap against runaway pages
 GRANTS = lambda: os.environ.get("GRANTS_ENABLED", "0") == "1"
-FINISHED = ("DONE", "NO_FACULTY_FOUND", "FAILED")
+FINISHED = ("DONE", "NO_FACULTY_FOUND", "FAILED", "STAFF_REVIEW")
 _LOG = {"lines": [], "steps": 0, "last": "", "at": ""}
 
 
@@ -81,32 +81,81 @@ def queue():
 
 # ---------------- crawling ----------------
 
-def _guess_directories(inst):
-    """No curated URLs: ask the LLM (when configured) for directory pages on the school's domain."""
-    try:
-        from services import crawl_llm
-        return crawl_llm.guess(inst["name"], inst.get("official_website", ""))
-    except Exception as e:
-        print(f"[pipeline] directory guess failed for {inst['name']}: {e}")
-        return []
+FIELDS_HINT = "computer science, electrical and computer engineering, mechanical, aerospace, biomedical, chemical, civil engineering, robotics, data science, statistics, mathematics, physics, chemistry, biology"
+
+
+def find_directories(inst):
+    """No curated URLs. Returns (dirs, status) where status is FOUND / NONE / STAFF_REVIEW.
+      1. deterministic discovery (sitemaps, homepage + academic-unit links, WordPress feed)
+      2. LLM URL guesses (three-model chain) - every guess is fetched and validated
+      3. all models failed technically -> STAFF_REVIEW (never NO_FACULTY_FOUND)"""
+    from services import discovery
+    found = discovery.discover(inst, log)
+    if found:
+        return found, "FOUND"
+    ai = _ai()
+    if not ai:
+        return [], "NONE"
+    dom = discovery.domain_of(inst.get("official_website") or "")
+    o = ai.guess_directories(inst["name"], dom, FIELDS_HINT)
+    if o.status == "STAFF_REVIEW":
+        flag_staff_review("FACULTY_DIRECTORY_DISCOVERY", "FACULTY_DIRECTORY_DISCOVERY_FAILED", inst,
+                          source_url=inst.get("official_website", ""), outcome=o, extra={"official_domain": dom})
+        return [], "STAFF_REVIEW"
+    out = []
+    for g in (o.value or [])[:10]:
+        url = str(g.url)
+        if not discovery.on_domain(url, dom):
+            continue                                  # off-domain guesses are discarded
+        ok, rows, info = discovery.validate(url, str(g.department) or "Faculty")
+        if ok:
+            out.append(dict(info, department=str(g.department) or discovery._dept_label("", url), url=url,
+                            discovery_method="llm_guess", **_ai_meta(o)))
+        time.sleep(1)
+    return out, ("FOUND" if out else "NONE")
+
+
+def extract_faculty(url, dept, inst):
+    """Rules first (links, titles, "Last, First", WordPress feed); the AI parser only for pages the
+    rules cannot read, and every AI name must appear in the fetched text.
+    Returns (rows, via, failed_outcome_or_None)."""
+    rows, via = fx.extract_faculty_any(url, dept)
+    if rows:
+        return rows, via, None
+    ai = _ai()
+    if not ai:
+        return [], via, None
+    page = fx.fetch_page(url)
+    if not page.get("ok"):
+        return [], via, None
+    o = ai.extract_faculty(page["text"], dept)
+    if o.status == "STAFF_REVIEW":
+        return [], "ai_failed", o
+    out = [{"name": r.name.strip(), "title": r.title or "Professor", "department": dept, "profile_url": url}
+           for r in (o.value or []) if "professor" in (r.title or "").lower()]
+    return out, f"ai:{o.model_used}", None
 
 
 def crawl(inst):
     """Import professors from every known directory page of this university.
-    Returns (added, per-directory report)."""
+    Returns (added, per-directory report, status)."""
     dirs = list(inst.get("directories") or [])
+    disc_status = "CURATED" if dirs else ""
     if not dirs:
-        dirs = _guess_directories(inst)
-        if dirs:
-            st.update_institution(inst["id"], {"directories": dirs})
+        found, disc_status = find_directories(inst)
+        dirs = [[d["department"], d["url"]] for d in found]
+        if found:
+            st.update_institution(inst["id"], {"directories": dirs, "directory_meta": [dict(d, checked_at=st.now_iso()) for d in found]})
     added = 0
     report = []
     for dept, url in dirs:
-        rows, via = fx.extract_faculty_any(url, dept)
-        if not rows:
+        rows, via, failed = extract_faculty(url, dept, inst)
+        if not rows and not failed:
             # A bot check can be temporary (it tightens after bursts): wait and try once more.
             time.sleep(20)
-            rows, via = fx.extract_faculty_any(url, dept)
+            rows, via, failed = extract_faculty(url, dept, inst)
+        if failed:
+            flag_staff_review("FACULTY_EXTRACTION", "ALL_LLM_FALLBACKS_FAILED", inst, source_url=url, outcome=failed)
         n = 0
         for r in rows[:MAX_PER_DEPARTMENT]:
             if st.add_professor(inst, r["name"], r["title"], r["department"] or dept, r["profile_url"] or url):
@@ -117,7 +166,9 @@ def crawl(inst):
     st.update_institution(inst["id"], {"dirs_checked": report})
     st.recount(inst["id"])
     st.invalidate_search()
-    return added, report
+    if not dirs and disc_status == "STAFF_REVIEW":
+        return added, report, "STAFF_REVIEW"
+    return added, report, disc_status
 
 
 # ---------------- OpenAlex ----------------
@@ -297,73 +348,155 @@ def discover_grants(p, inst, award_ids):
     return linked
 
 
-def _llm_mods():
-    """The Jac by-llm modules (crawler.jac, hiring.jac); None when no LLM is configured."""
-    if not fx.llm_configured():
-        return None
+# ---------------- AI (three-model fallback) + staff review ----------------
+
+def _ai():
+    """services/ai.jac (the by-llm tasks with the model fallback chain); None if no model configured."""
     try:
-        from services import crawler, hiring
-        return crawler, hiring
+        from services import ai
+        return ai if ai.configured() else None
     except Exception as e:
-        print(f"[pipeline] LLM modules unavailable: {e}")
+        print(f"[pipeline] AI module unavailable: {e}")
         return None
 
 
-def enrich_profile(p):
-    """Faculty profile page -> lab URL, homepage, ORCID and up to 3 listed papers (anchors
-    used to confirm the OpenAlex identity). Needs the LLM; skipped silently without it."""
-    mods = _llm_mods()
-    if not mods or p.get("profile_extracted") or not p.get("faculty_url"):
+def _ai_meta(o):
+    return {"model_used": o.model_used, "attempt_number": o.attempt_number, "fallback_count": o.fallback_count}
+
+
+def flag_staff_review(task_type, reason, inst=None, prof=None, source_url="", outcome=None, extra=None):
+    """STAFF_REVIEW is a first-class state: the system could not finish the task. It is never
+    recorded as NO_FACULTY_FOUND or NO_PUBLIC_SIGNAL_FOUND."""
+    key = f"{task_type}:{(prof or {}).get('id') or (inst or {}).get('id', '')}:{source_url}"
+    doc = {
+        "_id": key, "status": "STAFF_REVIEW", "reason": reason, "task_type": task_type,
+        "university": (inst or {}).get("name", ""), "institution_id": (inst or {}).get("id", ""),
+        "professor": (prof or {}).get("name"), "professor_id": (prof or {}).get("id"),
+        "source_url": source_url,
+        "models_attempted": list(outcome.models_attempted) if outcome else [],
+        "last_error": (outcome.last_error if outcome else "") or (extra or {}).get("last_error", ""),
+        "error_kind": outcome.error_kind if outcome else "", "attempted_at": st.now_iso(), "resolved": False,
+    }
+    doc.update(extra or {})
+    st.db().staff_review.replace_one({"_id": key}, doc, upsert=True)
+    log(f"Staff review: {task_type} {reason} - {(prof or {}).get('name') or (inst or {}).get('name', '')}")
+
+
+def enrich_profile(p, inst):
+    """Faculty profile page -> lab URL, homepage, ORCID and up to 3 listed papers (anchors that
+    confirm the OpenAlex identity). Without a model this step is skipped."""
+    ai = _ai()
+    if not ai or p.get("profile_extracted") or not p.get("faculty_url"):
         return {}
-    crawler = mods[0]
-    page = crawler.fetch_page(p["faculty_url"])
-    info = crawler.extract_profile(page, p["name"])
-    out = {"profile_extracted": True}
+    page = fx.fetch_page(p["faculty_url"])
+    if not page.get("ok"):
+        return {}                     # page unreachable now; try again on the next run
+    o = ai.extract_profile(page["text"], p["name"])
+    if o.status == "STAFF_REVIEW":
+        flag_staff_review("PROFILE_EXTRACTION", "ALL_LLM_FALLBACKS_FAILED", inst, p, p["faculty_url"], o)
+        return {}
+    out = {"profile_extracted": True, "profile_ai": _ai_meta(o)}
+    info = o.value
     if info is None:
         return out
-    if info.lab_url and not p.get("lab_url"):
+    low = page["text"]
+    if info.lab_url and not p.get("lab_url") and info.lab_url.split("//")[-1][:40] in low:
         out["lab_url"] = info.lab_url
-    if info.personal_url and not p.get("personal_url"):
+    if info.personal_url and not p.get("personal_url") and info.personal_url.split("//")[-1][:40] in low:
         out["personal_url"] = info.personal_url
-    if info.orcid and not p.get("orcid"):
+    if info.orcid and not p.get("orcid") and fx.short_id(info.orcid) in low:
         out["orcid"] = fx.short_id(info.orcid)
-    anchors = [{"title": pub.title, "doi": pub.doi, "publication_year": pub.year, "url": pub.url}
-               for pub in (info.publications or [])[:3] if pub.title]
+    anchors = [{"title": pub.title, "doi": pub.doi, "publication_year": pub.year}
+               for pub in (info.publications or [])[:3]
+               if pub.title and fx.normalize_quote_text(pub.title)[:60] in fx.normalize_quote_text(low)]
     if anchors and not p.get("anchors"):
         out["anchors"] = anchors
     return out
 
 
+HIRING_POSITIVE = ("DIRECT_HIRING", "INDIRECT_HIRING", "GENERAL_RECRUITMENT")
+
+
+def _hiring_on_page(ai, p, inst, url, method):
+    """Fetch one page, ask the model, verify the quote on the fetched text.
+    Returns ("FOUND"|"UNCERTAIN"|"NONE"|"FAILED", record)."""
+    page = fx.fetch_page(url)
+    if not page.get("ok"):
+        return "NONE", None
+    o = ai.extract_hiring(page["text"], p["name"])
+    if o.status == "STAFF_REVIEW":
+        return "FAILED", o
+    if o.status == "VALID_EMPTY":
+        return "NONE", None
+    f = o.value
+    if not fx.quote_on_page(f.quote, page["text"]):
+        return "NONE", None           # the model's sentence is not on the page: rejected
+    rec = {"status": f.status.name, "quote": f.quote.strip(), "source_url": page.get("url") or url,
+           "source_title": page.get("title") or "", "page_verified": True, "discovery_method": method,
+           "confidence": round(float(f.confidence or 0), 2), **_ai_meta(o)}
+    return ("UNCERTAIN" if f.status.name == "UNCERTAIN" else "FOUND"), rec
+
+
 def check_hiring(p, inst):
-    """Hiring statement: the professor's own pages first (quote must be verbatim on the fetched
-    page), then the research LLM (accepted only if the quote is found on its source page).
-    Returns the hiring dict to store; quote "" means "no current statement found"."""
-    mods = _llm_mods()
-    if not mods:
+    """Hiring signal, grounded in pages we fetch ourselves:
+      1. the professor's lab / personal / faculty pages
+      2. if nothing there: web search (DDGS) -> ranked candidate URLs -> same check
+    Result status: DIRECT_HIRING / INDIRECT_HIRING / GENERAL_RECRUITMENT / UNCERTAIN /
+    NO_PUBLIC_SIGNAL_FOUND. Returns None when it could not run (no model, search paused) so the
+    professor keeps their previous result and is re-checked later."""
+    ai = _ai()
+    if not ai:
         return None
-    crawler, hiring = mods
     ts = st.now_iso()
-    for url in (p.get("lab_url"), p.get("personal_url"), p.get("faculty_url")):
-        if not url:
+    uncertain, failures = None, []
+    known = [(p.get("lab_url"), "lab_page"), (p.get("personal_url"), "personal_page"), (p.get("faculty_url"), "faculty_page")]
+    seen = set()
+    for url, method in known:
+        if not url or url in seen:
             continue
-        page = crawler.fetch_page(url)
-        q = crawler.find_hiring_quote(page, p["name"])
-        if q:
-            return {"quote": q, "source_url": page.url, "source_title": page.title or "Faculty page",
-                    "date_found": ts, "last_checked": ts}
-    res = hiring.research_hiring(p["name"], inst["name"], p.get("department", ""), p.get("faculty_url", ""), p.get("lab_url", ""))
-    if res.quote and res.source_url:
-        src = crawler.fetch_page(res.source_url)
-        if crawler.quote_on_page(res.quote, src):
-            return {"quote": res.quote, "source_url": src.url, "source_title": res.source_title or src.title,
-                    "date_found": ts, "last_checked": ts}
-    old = p.get("hiring") or {}
-    return {"quote": "", "source_url": "", "source_title": "", "date_found": old.get("date_found", ""), "last_checked": ts}
+        seen.add(url)
+        kind, rec = _hiring_on_page(ai, p, inst, url, method)
+        if kind == "FOUND":
+            return dict(rec, checked_at=ts, date_found=ts)
+        if kind == "UNCERTAIN" and uncertain is None:
+            uncertain = rec
+        if kind == "FAILED":
+            failures.append((url, rec))
+    # 2. web search for pages we don't know yet
+    from services import websearch
+    from services import discovery
+    domain = discovery.domain_of(inst.get("official_website") or "")
+    try:
+        cands = websearch.find_hiring_candidates(p["name"], domain)
+    except websearch.SearchUnavailable as e:
+        log(f"Search paused ({str(e)[:80]}); {p['name']} hiring re-checked later.")
+        if uncertain:
+            return dict(uncertain, checked_at=ts)
+        return None
+    for url in cands:
+        if url in seen:
+            continue
+        seen.add(url)
+        kind, rec = _hiring_on_page(ai, p, inst, url, "search_result")
+        if kind == "FOUND":
+            return dict(rec, checked_at=ts, date_found=ts)
+        if kind == "UNCERTAIN" and uncertain is None:
+            uncertain = rec
+        if kind == "FAILED":
+            failures.append((url, rec))
+    if uncertain:
+        return dict(uncertain, checked_at=ts)
+    if failures:
+        url, o = failures[0]
+        flag_staff_review("HIRING_EXTRACTION", "ALL_LLM_FALLBACKS_FAILED", inst, p, url, o)
+        return {"status": "STAFF_REVIEW", "quote": "", "source_url": url, "checked_at": ts}
+    return {"status": "NO_PUBLIC_SIGNAL_FOUND", "quote": "", "source_url": "", "checked_at": ts,
+            "pages_checked": len(seen)}
 
 
 def process_professor(p, inst):
     inst_oid = resolve_institution(inst)
-    fields = enrich_profile(p)
+    fields = enrich_profile(p, inst)
     p = dict(p, **fields)
     if not p.get("openalex_author_id"):
         fields.update(match(p, inst_oid))
@@ -380,7 +513,11 @@ def process_professor(p, inst):
             fields.update(grants=grants, grant_count=len(grants), last_grant_update=st.now_iso())
     h = check_hiring(dict(p, **fields), inst)
     if h is not None:
-        fields.update(hiring=h, has_hiring=bool(h["quote"]), last_hiring_update=h["last_checked"])
+        if h["status"] == "STAFF_REVIEW":
+            fields.update(last_hiring_update=h["checked_at"])     # keep the previous verified result
+        else:
+            fields.update(hiring=h, has_hiring=h["status"] in HIRING_POSITIVE, hiring_status=h["status"],
+                          last_hiring_update=h["checked_at"])
     fields["pipeline_done"] = True
     merged = dict(p, **fields)
     fields["search_text"] = st.search_text_for(merged) + " | " + st.normalize_name(inst.get("city", "") + " " + inst.get("state", ""))
@@ -417,14 +554,19 @@ def step():
             if inst.get("pipeline_state") not in ("QUEUED", "CRAWLING"):
                 continue
             try:
-                added, report = crawl(inst)
+                added, report, disc = crawl(inst)
             except Exception as e:
                 st.update_institution(inst["id"], {"pipeline_state": "FAILED", "pipeline_note": str(e)[:300]})
                 return f"{inst['name']}: crawl failed ({str(e)[:150]})"
             total = st.count_professors({"institution_id": inst["id"]})
             if total == 0:
+                if disc == "STAFF_REVIEW" or any(r.get("via") == "ai_failed" for r in report):
+                    # the system could not finish (every model failed): not the same as "no faculty"
+                    st.update_institution(inst["id"], {"pipeline_state": "STAFF_REVIEW",
+                                                       "pipeline_note": "AI fallbacks failed; listed under Staff review."})
+                    return f"{inst['name']}: needs staff review."
                 note = ("No faculty directory could be read." if inst.get("directories") or report
-                        else "No faculty directory URLs known yet (add them in services/universities.py, or set an LLM key to discover them).")
+                        else "No faculty directory found (sitemaps, homepage links" + (", AI guesses" if _ai() else "") + "). Add URLs in services/universities.py.")
                 st.update_institution(inst["id"], {"pipeline_state": "NO_FACULTY_FOUND", "pipeline_note": note})
                 return f"{inst['name']}: no faculty found."
             st.update_institution(inst["id"], {"pipeline_state": "PROCESSING", "pipeline_note": ""})

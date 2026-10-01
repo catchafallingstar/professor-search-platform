@@ -711,6 +711,34 @@ def extract_faculty_any(url, department):
     return rows, page.get("via") or "fail"
 
 
+_QUOTE_MAP = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'", "\u2032": "'", "`": "'",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u2033": '"',
+    "\u2013": "-", "\u2014": "-", "\u2212": "-", "\u00ad": "",
+    "\u00a0": " ", "\u2009": " ", "\u202f": " ", "\u200b": "",
+})
+
+
+def normalize_quote_text(t):
+    """Formatting-only normalisation: HTML entities, curly quotes/apostrophes, dashes,
+    non-breaking/zero-width spaces, line breaks and repeated whitespace. Wording, letters
+    and punctuation order are untouched, so a paraphrase still fails."""
+    t = html.unescape(t or "")
+    t = re.sub(r"\*\*|__|\[|\]\([^)]*\)", "", t)   # markdown emphasis / link targets from the reader
+    t = t.translate(_QUOTE_MAP)
+    return " ".join(t.split()).strip().lower()
+
+
+def quote_on_page(quote, page_text):
+    """Strict verification: the normalised quote must appear verbatim in the normalised page.
+    Trailing punctuation differences are tolerated; nothing fuzzy or semantic."""
+    q = normalize_quote_text(quote).strip(" \"'")
+    if len(q) < 20:
+        return False
+    body = normalize_quote_text(page_text)
+    return q in body or q.rstrip(".!?;:") in body
+
+
 def squash(t):
     return " ".join(re.sub(r"[^a-z0-9 ]", " ", (t or "").lower()).split())
 
