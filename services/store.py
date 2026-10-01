@@ -257,11 +257,14 @@ def search_rows():
 
 def search(query="", university="", department="", subfield="", has_grant=False, has_hiring=False, offset=0, limit=50):
     words = [w for w in normalize_name(query).split() if w]
+    # Universities name departments differently ("Computer Science and Engineering",
+    # "Electrical Engineering and Computer Sciences"); the filter matches by contained name.
+    dept = normalize_name(department)
     out = []
     for r in search_rows():
         if university and r.get("university") != university:
             continue
-        if department and r.get("department") != department:
+        if dept and dept not in normalize_name(r.get("department", "")):
             continue
         if subfield and subfield not in (r.get("subfields") or []) and subfield not in (r.get("fields") or []):
             continue

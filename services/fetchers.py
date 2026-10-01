@@ -510,7 +510,7 @@ def fetch_page(url):
 _TITLE_RE = re.compile(r"\b((?:Distinguished |Endowed |University |Collegiate |Full |Associate |Assistant )*Professor\b[^\n\[\]]{0,80})", re.I)
 _EXCLUDE_TITLE = re.compile(r"emerit|adjunct|affiliate|courtesy|visiting|lecturer|teaching|clinical|practice|research professor|professor of practice", re.I)
 _LINK_RE = re.compile(r"\[([^\]]{3,160})\]\((https?://[^)\s]+)\)")
-_BAD_NAME = re.compile(r"faculty|directory|people|department|school|college|university|research|news|events|about|contact|staff|students|home|program|center|lab\b|search|filter|view|profile|more|apply|give|login|professor|engineering|science|medicine|robotics|mathematics|physics|chemistry|biology|institute|interests|office|phone|email|website", re.I)
+_BAD_NAME = re.compile(r"faculty|directory|people|department|school|college|university|research|news|events|about|contact|staff|students|home|program|center|lab\b|search|filter|view|profile|more|apply|give|login|professor|engineering|science|medicine|robotics|mathematics|physics|chemistry|biology|institute|interests|office|phone|email|website|mentoring|plan\b|policy|guidelines|resources|handbook", re.I)
 
 
 def _clean_name(s):
