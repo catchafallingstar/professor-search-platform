@@ -298,6 +298,18 @@ def filter_options(university="", department=""):
     return {"universities": unis, "departments": depts, "subfields": subs, "fields": flds}
 
 
+# ---------------- staff review ----------------
+
+def staff_review_items(limit=200):
+    """Open items the system could not finish on its own, newest first."""
+    rows = db().staff_review.find({"resolved": False}).sort("attempted_at", -1).limit(int(limit))
+    return [dict(d, id=str(d.pop("_id"))) for d in rows]
+
+
+def resolve_staff_review(item_id):
+    db().staff_review.update_one({"_id": item_id}, {"$set": {"resolved": True, "resolved_at": now_iso()}})
+
+
 # ---------------- settings ----------------
 
 def get_setting(key, default=None):

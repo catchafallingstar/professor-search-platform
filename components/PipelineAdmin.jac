@@ -17,6 +17,7 @@ sv import from ..services.queue {
 import from .OpenAlexKeys { OpenAlexKeys }
 import from .StaffNav { StaffNav }
 import from .DataBackup { DataBackup }
+import from .StaffReview { StaffReview }
 
 def:pub StatTile(label: str, value: int, icon: any) -> JsxElement {
     return <Card className="shadow-sm">
@@ -256,5 +257,6 @@ def:pub PipelineAdmin() -> JsxElement {
                 </div>}
             </CardContent>
         </Card>
+        <StaffReview />
     </div>;
 }

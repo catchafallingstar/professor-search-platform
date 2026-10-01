@@ -263,6 +263,62 @@ def match(p, inst_oid):
             else f"Ambiguous: {len(cands)} OpenAlex authors with this name at the institution."}
 
 
+SCHOLAR_REASONS = {
+    "NO_SCHOLAR_PROFILE": "No Google Scholar profile with this name at this university.",
+    "SCHOLAR_PROFILE_UNREADABLE": "Google Scholar profile found but its paper list could not be read.",
+    "SCHOLAR_AMBIGUOUS": "Google Scholar papers point to more than one OpenAlex author.",
+    "SCHOLAR_PAPERS_NOT_IN_OPENALEX": "None of the Google Scholar papers were found in OpenAlex.",
+}
+
+
+def resolve_unmatched(p, inst, inst_oid):
+    """OpenAlex name + institution failed: try the professor's Google Scholar profile.
+    Still unresolved -> Staff review (OPENALEX_IDENTITY). A later match clears the review item."""
+    from services import scholar
+    try:
+        out, reason = scholar.match_via_scholar(p, inst, inst_oid, names_match)
+    except fx.RateLimited:
+        raise                                  # OpenAlex resting: the worker waits and retries
+    except Exception as e:
+        print(f"[pipeline] scholar fallback failed for {p['name']}: {e}")
+        return {}
+    if out.get("match_status") == "MATCHED":
+        st.db().staff_review.delete_many({"task_type": "OPENALEX_IDENTITY", "professor_id": p["id"]})
+        return out
+    if reason:
+        flag_staff_review("OPENALEX_IDENTITY", reason, inst, p, source_url=out.get("scholar_url") or p.get("faculty_url", ""),
+                          extra={"last_error": SCHOLAR_REASONS.get(reason, reason),
+                                 "openalex_note": p.get("match_note", ""), "department": p.get("department", "")})
+    if "match_note" in out:
+        out["match_note"] = p.get("match_note", "") + " " + out["match_note"]
+    return out
+
+
+def scholar_backfill_one():
+    """Professors left UNRESOLVED before the Google Scholar step existed: give each one Scholar
+    check when the worker is otherwise idle. Returns a log message, or "" when nothing to do."""
+    from services import websearch as ws
+    if not ws.status()["available"]:
+        return ""
+    doc = st.db().professors.find_one({"match_status": "UNRESOLVED", "scholar_checked": {"$exists": False}})
+    if doc is None:
+        return ""
+    p = st._clean(doc)
+    inst = st.get_institution(p["institution_id"])
+    if inst is None:
+        st.update_professor(p["id"], {"scholar_checked": st.now_iso()})
+        return ""
+    out = resolve_unmatched(p, inst, resolve_institution(inst))
+    if not out:
+        return ""                              # search cooled down mid-check; retried later
+    if out.get("match_status") == "MATCHED":
+        out["pipeline_done"] = False           # papers + subfields are pulled on the next pass
+        st.update_institution(inst["id"], {"pipeline_state": "PROCESSING"})
+    st.update_professor(p["id"], out)
+    st.invalidate_search()
+    return f"{p['name']} ({inst['name']}): Google Scholar check -> {out.get('match_status') or 'still unresolved (staff review)'}"
+
+
 def ingest_works(p):
     """Recent papers (last 5 years) + their OpenAlex subfields. Returns (paper_ids, subfields, fields, award_ids)."""
     year = time.gmtime().tm_year - 4
@@ -500,6 +556,8 @@ def process_professor(p, inst):
     p = dict(p, **fields)
     if not p.get("openalex_author_id"):
         fields.update(match(p, inst_oid))
+        if fields.get("match_status") == "UNRESOLVED":
+            fields.update(resolve_unmatched(dict(p, **fields), inst, inst_oid))
     author = fields.get("openalex_author_id") or p.get("openalex_author_id")
     n_papers = len(p.get("paper_ids") or [])
     grants = p.get("grants") or []
@@ -573,6 +631,9 @@ def step():
             return f"{inst['name']}: imported {added} professors from {len(report)} directory pages."
         if limited:
             raise fx.RateLimited(fx.rate_limit_status()["message"])
+        msg = scholar_backfill_one()
+        if msg:
+            return msg
         if maintenance_due():
             n = start_maintenance()
             return f"Monthly maintenance started: re-checking {n} universities (faculty lists, papers, hiring)."

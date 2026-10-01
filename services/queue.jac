@@ -132,6 +132,40 @@ def:priv set_worker(running: bool) -> WorkerState {
     return _worker_state();
 }
 
+obj ReviewItem {
+    has id: str = "",
+        task_type: str = "",
+        reason: str = "",
+        detail: str = "",
+        university: str = "",
+        professor: str = "",
+        professor_id: str = "",
+        department: str = "",
+        source_url: str = "",
+        attempted_at: str = "";
+}
+
+def:priv list_staff_review(limit: int = 200) -> list[ReviewItem] {
+    require_staff();
+    out: list[ReviewItem] = [];
+    for d in (st.staff_review_items(limit) as list[dict]) {
+        out.append(ReviewItem(
+            id=str(d.get("id", "")), task_type=str(d.get("task_type", "")), reason=str(d.get("reason", "")),
+            detail=str(d.get("last_error") or ""), university=str(d.get("university") or ""),
+            professor=str(d.get("professor") or ""), professor_id=str(d.get("professor_id") or ""),
+            department=str(d.get("department") or ""), source_url=str(d.get("source_url") or ""),
+            attempted_at=str(d.get("attempted_at") or "")
+        ));
+    }
+    return out;
+}
+
+def:priv resolve_staff_review(item_id: str) -> StepResult {
+    require_staff();
+    st.resolve_staff_review(item_id);
+    return StepResult(message="Marked as handled.");
+}
+
 def:priv reset_institution(institution_id: str) -> InstitutionStatus | None {
     require_staff();
     st.update_institution(institution_id, {"pipeline_state": "QUEUED", "pipeline_note": ""});
