@@ -37,6 +37,42 @@ HUBS = ("", "/academics", "/academics/schools-colleges", "/schools-colleges", "/
 LINK_RE = re.compile(r"\[([^\]]{1,120})\]\((https?://[^)\s]+)\)")
 
 
+# Campus news, department announcements, student blogs, events: never a faculty directory.
+NEWS_RE = re.compile(
+    r"/(news|newsroom|stories|story|blog|blogs|posts?|articles?|announcements?|press|press-releases|"
+    r"events?|calendar|spotlights?|features?|magazine|media|category|tag|author|feed|student-life|"
+    r"students?/blog|in-the-news)(/|$)|/(19|20)\d\d/\d{1,2}(/|$)|[?&](p|cat|tag)=", re.I)
+
+
+def is_news_like(url):
+    p = urllib.parse.urlparse(url or "")
+    return bool(NEWS_RE.search(p.path + ("?" + p.query if p.query else "")))
+
+
+def wordpress_directory_pages(base, dom):
+    """Ask a WordPress site's REST API which of its PAGES are faculty directories.
+    Only the `pages` type is queried; `posts` (news, announcements, blog entries) never are.
+    Returns candidate page URLs; the caller still fetches and validates each real page."""
+    out = []
+    for term in ("faculty", "people", "directory"):
+        api = f"{base}/wp-json/wp/v2/pages?search={term}&per_page=50&_fields=link,title,type"
+        try:
+            data = fx._get_json_any(api)
+        except Exception:
+            return out                     # not WordPress, or the API is closed
+        if not isinstance(data, list):
+            return out
+        for d in data:
+            link = (d.get("link") or "").strip()
+            title = re.sub(r"<[^>]+>", "", ((d.get("title") or {}).get("rendered") or "")).strip()
+            path = urllib.parse.urlparse(link).path.lower()
+            if (d.get("type", "page") == "page" and on_domain(link, dom) and not is_news_like(link)
+                    and re.search(r"/(faculty|people|directory)", path) and path.count("/") <= 5):
+                out.append((title, link))
+        time.sleep(0.5)
+    return list(dict.fromkeys(out))
+
+
 def domain_of(website):
     host = urllib.parse.urlparse(website or "").netloc.lower()
     return host[4:] if host.startswith("www.") else host
@@ -107,13 +143,15 @@ def sitemap_candidates(base, dom, limit=4000):
                     maps.append(loc)
                 continue
             p = urllib.parse.urlparse(loc).path.lower()
-            if on_domain(loc, dom) and re.search(r"/(faculty|people|directory)(/|$|\.html)", p) and p.count("/") <= 4:
+            if on_domain(loc, dom) and not is_news_like(loc) and re.search(r"/(faculty|people|directory)(/|$|\.html)", p) and p.count("/") <= 4:
                 urls.append(loc)
     return list(dict.fromkeys(urls))
 
 
 def validate(url, dept=""):
     """Fetch and check a candidate. Returns (ok, rows, info)."""
+    if is_news_like(url):
+        return False, [], {"name_count": 0, "faculty_title_count": 0, "via": "rejected_news"}
     rows, via = fx.extract_faculty_any(url, dept or "Faculty")
     titles = sum(1 for r in rows if "professor" in (r.get("title") or "").lower())
     ok = len(rows) >= 5 and titles >= 3
@@ -167,7 +205,8 @@ def discover(inst, log=print):
         if not page.get("ok"):
             continue
         links = [(m.group(1), m.group(2)) for m in LINK_RE.finditer(page["text"])]
-        cands = sorted({(t, u) for t, u in links if on_domain(u, dom)}, key=lambda x: -score(x[1], x[0]))
+        cands = sorted({(t, u) for t, u in links if on_domain(u, dom) and not is_news_like(u)},
+                       key=lambda x: -score(x[1], x[0]))
         for t, u in cands[:12]:
             s = score(u, t)
             path = urllib.parse.urlparse(u).path.lower()
@@ -175,14 +214,11 @@ def discover(inst, log=print):
                 try_url(u, t, "homepage_link" if depth == 0 else "academic_unit_link")
             elif s >= 30 and depth + 1 < MAX_DEPTH and any(w in t.lower() for w in UNIT_WORDS):
                 frontier.append((u, depth + 1))
-    # 3. WordPress people feed at the site root
+    # 3. WordPress REST API as a pointer only: it names which PAGES are directories, and each
+    #    of those real pages is then fetched and validated like any other candidate.
     if not accepted:
-        try:
-            rows = fx.wordpress_faculty(base, "Faculty")
-            if len(rows) >= 5:
-                accepted.append({"department": "Faculty", "url": base, "discovery_method": "wordpress_api",
-                                 "name_count": len(rows), "faculty_title_count": len(rows)})
-        except Exception:
-            pass
+        budget[0] = max(budget[0], 8)
+        for t, u in wordpress_directory_pages(base, dom)[:8]:
+            try_url(u, t, "wordpress_page_index")
     log(f"{inst.get('name')}: discovery tried {MAX_PAGES - budget[0]} pages, {len(accepted)} directories")
     return accepted
