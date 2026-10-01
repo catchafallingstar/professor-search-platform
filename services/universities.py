@@ -185,6 +185,18 @@ EXTRA_DIRS.update({
     ],
 })
 
+# Humanities, arts and social sciences (all departments are in scope, not just STEM).
+# UMich LSA serves the full list on faculty.directory.html; each verified to parse 8+ professors.
+_LSA = "https://lsa.umich.edu/{}/people/faculty.directory.html"
+EXTRA_DIRS.setdefault("170976", []).extend([[d, _LSA.format(s)] for d, s in [
+    ("English Language and Literature", "english"), ("History", "history"), ("Philosophy", "philosophy"),
+    ("Political Science", "polisci"), ("Sociology", "soc"), ("Romance Languages and Literatures", "rll"),
+    ("Germanic Languages and Literatures", "german"), ("Slavic Languages and Literatures", "slavic"),
+    ("Asian Languages and Cultures", "asian"), ("American Culture", "ac"), ("Comparative Literature", "complit"),
+    ("History of Art", "histart"), ("Film, Television, and Media", "ftvm"), ("Linguistics", "linguistics"),
+    ("Economics", "econ"), ("Physics", "physics"), ("Statistics", "stats"),
+]])
+
 for _row in PRIORITY:
     _have = {u for _, u in _row["dirs"]}
     _row["dirs"] = _row["dirs"] + [d for d in EXTRA_DIRS.get(_row["ipeds"], []) if d[1] not in _have]

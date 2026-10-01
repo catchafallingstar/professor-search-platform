@@ -21,8 +21,8 @@ import from jaclang.byllm.lib { Model }
 # ---------- model chain ----------
 
 glob DEFAULT_CHAIN: list[str] = [
+    # thinkingmachines/inkling:free was removed: OpenRouter rejects it (403, "only available on agentic harnesses")
     "openrouter/nvidia/nemotron-3.5-lightning:free",
-    "openrouter/thinkingmachines/inkling:free",
     "openrouter/nvidia/nemotron-3-super-120b-a12b"
 ];
 
@@ -46,7 +46,7 @@ def configured() -> bool {
 
 glob _MODELS: dict = {},
      cur: any = None,
-     _LOCK: any = threading.Lock();
+     _LOCK: threading.Lock = threading.Lock();
 
 def _model(name: str) -> Model {
     if name not in _MODELS {
@@ -141,7 +141,7 @@ sem DirectoryGuess.department = "Academic unit the page belongs to, e.g. 'Comput
 sem DirectoryGuess.url = "Absolute URL on the university's own domain.";
 
 def _guess_dirs(university: str, domain: str, fields: str) -> list[DirectoryGuess] by cur();
-sem _guess_dirs = "Propose up to 8 URLs of official FACULTY DIRECTORY pages (pages listing a department's professors) at this university. Prefer engineering, computing and science departments. Only URLs on the given domain or its subdomains. Return an empty list if you do not know.";
+sem _guess_dirs = "Propose up to 8 URLs of official FACULTY DIRECTORY pages (pages listing a department's professors) at this university. Cover every academic area: engineering, sciences, humanities, arts and social sciences. Only URLs on the given domain or its subdomains. Return an empty list if you do not know.";
 sem _guess_dirs.university = "University name.";
 sem _guess_dirs.domain = "The university's official web domain, e.g. umich.edu.";
 sem _guess_dirs.fields = "Academic fields to prioritise.";
@@ -269,4 +269,43 @@ def _check_hiring(raw: any) -> list {
 def extract_hiring(page_text: str, professor_name: str) -> AiOutcome {
     # UNCERTAIN is a valid hiring classification: not escalated.
     return run_task(_hiring, [page_text[:20000], professor_name], _check_hiring);
+}
+
+# ---------- task 6: publications of a professor nobody else could identify ----------
+
+obj KnownPaper {
+    has title: str = "",
+        year: int = 0,
+        doi: str = "",
+        confidence: float = 0.0;
+}
+sem KnownPaper.title = "Exact title of a paper, book, chapter or article you are sure THIS person wrote.";
+sem KnownPaper.year = "Publication year, 0 if unknown.";
+sem KnownPaper.doi = "DOI if you know it exactly, else empty. Never invent a DOI.";
+sem KnownPaper.confidence = "Your confidence from 0 to 1 that this work is by THIS exact person at THIS university in THIS field.";
+
+obj PublicationAnswer {
+    has papers: list[KnownPaper] = [],
+        reasoning: str = "";
+}
+sem PublicationAnswer.papers = "Works you are confident belong to this exact person. An EMPTY list is a correct, acceptable answer.";
+sem PublicationAnswer.reasoning = "One sentence on how you know (or why you do not).";
+
+def _publications(professor_name: str, university: str, department: str, title: str, page_text: str) -> PublicationAnswer by cur();
+sem _publications = "ACCURACY FIRST. List publications of this specific professor ONLY if you are confident they were written by this exact person: same name, at this university, working in this department's field. Many people share a name - a work by a same-named person at another institution or in another field is WRONG and must be left out. It is completely fine, and often correct, that the professor has no publications you know of (many humanities and arts faculty publish books, exhibitions or performances, or nothing indexed); in that case return an empty list. Never guess, never invent titles or DOIs. Use the faculty page text if given.";
+sem _publications.professor_name = "Full name as listed on the university's faculty directory.";
+sem _publications.university = "The university the professor works at now.";
+sem _publications.department = "The professor's department (their field).";
+sem _publications.title = "Academic title, e.g. Assistant Professor.";
+sem _publications.page_text = "Text of the professor's official faculty profile page, possibly empty.";
+
+def _check_publications(raw: any) -> list {
+    if not isinstance(raw, PublicationAnswer) { return ["INVALID_OUTPUT", None]; }
+    rows = [p for p in raw.papers if p.title.strip() and p.confidence >= 0.8][:8];
+    return ["VALID_RESULT" if rows else "VALID_EMPTY", rows];
+}
+
+def find_publications(professor_name: str, university: str, department: str, title: str, page_text: str) -> AiOutcome {
+    # VALID_EMPTY ("no papers") is a real answer and is not escalated to the next model.
+    return run_task(_publications, [professor_name, university, department, title, page_text[:10000]], _check_publications);
 }

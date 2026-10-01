@@ -218,7 +218,7 @@ def recount(inst_id):
             "n": {"$sum": 1},
             "done": {"$sum": {"$cond": ["$pipeline_done", 1, 0]}},
             "matched": {"$sum": {"$cond": [{"$eq": ["$match_status", "MATCHED"]}, 1, 0]}},
-            "unresolved": {"$sum": {"$cond": [{"$eq": ["$match_status", "UNRESOLVED"]}, 1, 0]}},
+            "unresolved": {"$sum": {"$cond": [{"$in": ["$match_status", ["UNRESOLVED", "NO_RESULT_FOUND"]]}, 1, 0]}},
             "papers": {"$sum": {"$size": {"$ifNull": ["$paper_ids", []]}}},
             "grants": {"$sum": {"$ifNull": ["$grant_count", 0]}},
             "hiring": {"$sum": {"$cond": ["$has_hiring", 1, 0]}},

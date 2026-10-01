@@ -81,7 +81,10 @@ def queue():
 
 # ---------------- crawling ----------------
 
-FIELDS_HINT = "computer science, electrical and computer engineering, mechanical, aerospace, biomedical, chemical, civil engineering, robotics, data science, statistics, mathematics, physics, chemistry, biology"
+FIELDS_HINT = ("all academic departments: engineering and computing; natural sciences and mathematics; "
+               "humanities (English, history, philosophy, languages and literatures, classics, religion, art history); "
+               "arts (music, theatre, film, visual art); social sciences (economics, political science, sociology, "
+               "anthropology, psychology, linguistics, communication); education, law, business, public policy")
 
 
 def find_directories(inst):
@@ -271,26 +274,114 @@ SCHOLAR_REASONS = {
 }
 
 
-def resolve_unmatched(p, inst, inst_oid):
-    """OpenAlex name + institution failed: try the professor's Google Scholar profile.
-    Still unresolved -> Staff review (OPENALEX_IDENTITY). A later match clears the review item."""
+def _llm_papers_to_author(p, inst, papers):
+    """Each LLM-suggested work must exist in OpenAlex (DOI, else exact title) with an author whose
+    name matches the professor. Returns (openalex_author_id or "", verified titles)."""
     from services import scholar
-    try:
-        out, reason = scholar.match_via_scholar(p, inst, inst_oid, names_match)
-    except fx.RateLimited:
-        raise                                  # OpenAlex resting: the worker waits and retries
-    except Exception as e:
-        print(f"[pipeline] scholar fallback failed for {p['name']}: {e}")
-        return {}
-    if out.get("match_status") == "MATCHED":
-        st.db().staff_review.delete_many({"task_type": "OPENALEX_IDENTITY", "professor_id": p["id"]})
-        return out
-    if reason:
-        flag_staff_review("OPENALEX_IDENTITY", reason, inst, p, source_url=out.get("scholar_url") or p.get("faculty_url", ""),
-                          extra={"last_error": SCHOLAR_REASONS.get(reason, reason),
-                                 "openalex_note": p.get("match_note", ""), "department": p.get("department", "")})
-    if "match_note" in out:
-        out["match_note"] = p.get("match_note", "") + " " + out["match_note"]
+    votes, verified = {}, []
+    for k in papers[:6]:
+        works = []
+        if k.doi:
+            try:
+                w = fx.fetch_work_by_doi(k.doi)
+                works = [w] if w else []
+            except fx.RateLimited:
+                raise
+            except Exception:
+                works = []
+        if not works and k.title:
+            target = scholar._key(k.title)
+            works = [w for w in fx.search_work_by_title(k.title) if scholar._key(w.get("title") or "") == target][:1]
+        for w in works:
+            for au in w.get("authorships") or []:
+                a = au.get("author") or {}
+                aid = _sid(a.get("id"))
+                if aid and scholar._names_ok(names_match, p["name"], a.get("display_name") or ""):
+                    votes[aid] = votes.get(aid, 0) + 1
+                    verified.append(k.title)
+                    break
+    if not votes:
+        return "", verified
+    best = max(votes, key=votes.get)
+    return (best if list(votes.values()).count(votes[best]) == 1 else ""), verified
+
+
+def _llm_publications(p, inst):
+    """Last resort: ask the LLM (accuracy first, empty is fine), then verify in OpenAlex.
+    Returns (fields, reason) like the other steps; reason "" with no fields = AI not configured."""
+    ai = _ai()
+    if not ai:
+        return {}, ""
+    page_text = ""
+    if p.get("faculty_url"):
+        pg = fx.fetch_page(p["faculty_url"])
+        if pg.get("ok") and st.normalize_name(p["name"]).split()[-1] in st.normalize_name(pg["text"]):
+            page_text = pg["text"]                      # only a page that actually mentions the person
+    o = ai.find_publications(p["name"], inst.get("name", ""), p.get("department", ""), p.get("title", ""), page_text)
+    base = {"llm_papers_checked": st.now_iso(), "llm_papers_ai": _ai_meta(o)}
+    if o.status == "STAFF_REVIEW":
+        return base, "LLM_FAILED"
+    papers = list(o.value or [])
+    if not papers:
+        return base, "NO_RESULT_FOUND"                  # the model knows of no papers: an accepted answer
+    aid, verified = _llm_papers_to_author(p, inst, papers)
+    if aid:
+        return dict(base, openalex_author_id=aid, match_status="MATCHED", match_method="LLM_VERIFIED",
+                    match_note=f"Publications suggested by the AI ({o.model_used}) were verified in OpenAlex: "
+                               f"{len(verified)} work(s) with this author, e.g. \"{verified[0][:90]}\"."), ""
+    return dict(base, match_note="The AI suggested publications, but none could be verified in OpenAlex for this person."), "NO_RESULT_FOUND"
+
+
+IDENTITY_REASONS = dict(SCHOLAR_REASONS, **{
+    "NO_RESULT_FOUND": "No Google Scholar profile, no ORCID-confirmed OpenAlex author, and no publications the AI could name and verify. The professor may have no indexed papers.",
+    "LLM_FAILED": "Every AI model failed while looking for publications; nothing could be checked.",
+})
+
+
+def resolve_unmatched(p, inst, inst_oid):
+    """OpenAlex name + institution failed. Try, in order (each must match the person AND university):
+      1. Google Scholar profile -> its papers in OpenAlex
+      2. ORCID record (name + affiliation) -> its DOIs in OpenAlex
+      3. AI publication lookup (accuracy first, empty is fine) -> each work verified in OpenAlex
+    Still none -> match_status NO_RESULT_FOUND + Staff review. A later match clears the review item."""
+    from services import scholar, orcid
+    steps = [
+        ("scholar", lambda: scholar.match_via_scholar(p, inst, inst_oid, names_match)),
+        ("orcid", lambda: orcid.match_via_orcid(p, inst, names_match, lambda a, b: scholar._names_ok(names_match, a, b))),
+        ("llm", lambda: _llm_publications(p, inst)),
+    ]
+    out, reason, last_url = {}, "", ""
+    for name, run in steps:
+        try:
+            got, why = run()
+        except fx.RateLimited:
+            raise                              # OpenAlex resting: the worker waits and retries
+        except Exception as e:
+            print(f"[pipeline] {name} fallback failed for {p['name']}: {e}")
+            got, why = {}, ""
+        note = got.pop("match_note", "")
+        out.update(got)
+        if note:
+            out["match_note"] = (out.get("match_note", "") + " " + note).strip()
+        if got.get("match_status") == "MATCHED":
+            st.db().staff_review.delete_many({"task_type": "OPENALEX_IDENTITY", "professor_id": p["id"]})
+            out["match_note"] = note
+            out["identity_checked"] = st.now_iso()
+            return out
+        if name == "scholar" and not got and not why:
+            return {}                          # web search cooling down: keep the professor for later
+        last_url = got.get("scholar_url") or last_url
+        reason = why or reason
+    if out.get("llm_papers_checked") and reason == "LLM_FAILED":
+        final = "LLM_FAILED"
+    else:
+        final = "NO_RESULT_FOUND"
+        out["match_status"] = "NO_RESULT_FOUND"
+    flag_staff_review("OPENALEX_IDENTITY", final, inst, p, source_url=last_url or p.get("faculty_url", ""),
+                      extra={"last_error": IDENTITY_REASONS.get(final, final),
+                             "openalex_note": p.get("match_note", ""), "department": p.get("department", "")})
+    out["match_note"] = (p.get("match_note", "") + " " + out.get("match_note", "")).strip()
+    out["identity_checked"] = st.now_iso()
     return out
 
 
@@ -300,7 +391,8 @@ def scholar_backfill_one():
     from services import websearch as ws
     if not ws.status()["available"]:
         return ""
-    doc = st.db().professors.find_one({"match_status": "UNRESOLVED", "scholar_checked": {"$exists": False}})
+    # every professor still UNRESOLVED that has not been through the full Scholar -> ORCID -> AI chain
+    doc = st.db().professors.find_one({"match_status": "UNRESOLVED", "identity_checked": {"$exists": False}})
     if doc is None:
         return ""
     p = st._clean(doc)

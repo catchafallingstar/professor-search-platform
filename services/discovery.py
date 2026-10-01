@@ -31,7 +31,12 @@ LOW_PATH = ("/admissions", "/alumni", "/news", "/events", "/giving", "/athletics
             "/campus-life", "/jobs", "/hr", "/calendar", "/apply", "/visit", "/library", "/covid")
 UNIT_WORDS = ("college of", "school of", "department of", "engineering", "computer", "computing", "science",
               "mathematics", "statistics", "physics", "chemistry", "biology", "robotics", "data", "information",
-              "electrical", "mechanical", "aerospace", "materials", "chemical", "biomedical", "civil", "economics")
+              "electrical", "mechanical", "aerospace", "materials", "chemical", "biomedical", "civil", "economics",
+              # liberal arts, humanities and social sciences are in scope too
+              "liberal arts", "humanities", "arts", "letters", "english", "history", "philosophy", "language",
+              "literature", "linguistics", "classics", "religion", "art", "music", "theatre", "theater", "film",
+              "media", "communication", "journalism", "anthropology", "sociology", "political", "psychology",
+              "social", "education", "law", "business", "public policy", "studies", "geography")
 HUBS = ("", "/academics", "/academics/schools-colleges", "/schools-colleges", "/colleges", "/departments",
         "/academics/departments", "/research")
 LINK_RE = re.compile(r"\[([^\]]{1,120})\]\((https?://[^)\s]+)\)")
