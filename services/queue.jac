@@ -284,6 +284,8 @@ def:pub internal_action(worker_token: str = "", action: str = "", arg: str = "")
         return StepResult(message=f"Loaded {r[1]} research universities from IPEDS {r[0]} ({r[2]} new).");
     }
     if action == "retry_unreadable" { return StepResult(message=f"Re-queued {pipe.requeue()} universities."); }
+    if action == "queue_grant_check" { return StepResult(message="Queued " + str(pipe.queue_test_job("GRANT_CHECK", arg))); }
+    if action == "queue_llm_identity" { return StepResult(message="Queued " + str(pipe.queue_test_job("LLM_IDENTITY", arg))); }
     if action == "recrawl_all" { return StepResult(message=f"Re-crawling {pipe.recrawl_all()} universities."); }
     return StepResult(ok=False, message="Unknown action");
 }

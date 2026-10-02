@@ -306,28 +306,60 @@ def _llm_papers_to_author(p, inst, papers):
     return (best if list(votes.values()).count(votes[best]) == 1 else ""), verified
 
 
+class _Paper:
+    def __init__(self, d):
+        self.title = str(d.get("title") or "").strip()
+        self.doi = str(d.get("doi") or "").strip()
+        self.year = int(d.get("year") or 0)
+        self.confidence = float(d.get("confidence") or 0)
+
+
+def _ask_local_model(p, inst, page_text):
+    """Local Ollama model (streamed, thinking off). Returns (papers, meta) or raises LocalLLMError."""
+    from services import llm_local
+    ans = llm_local.find_publications(p["name"], inst.get("name", ""), p.get("department", ""), p.get("title", ""), page_text)
+    papers = [_Paper(x) for x in (ans.get("papers") or []) if isinstance(x, dict)]
+    papers = [k for k in papers if k.title and k.confidence >= 0.8][:5]
+    return papers, {"model_used": os.environ.get("LLM_MODEL", ""), "attempt_number": 1, "fallback_count": 0,
+                    "reasoning": str(ans.get("reasoning") or "")[:300]}
+
+
 def _llm_publications(p, inst):
     """Last resort: ask the LLM (accuracy first, empty is fine), then verify in OpenAlex.
+    Local Ollama model first (no credit limits); if it fails, the cloud by-llm chain.
     Returns (fields, reason) like the other steps; reason "" with no fields = AI not configured."""
+    from services import llm_local
     ai = _ai()
-    if not ai:
+    if not ai and not llm_local.configured():
         return {}, ""
     page_text = ""
     if p.get("faculty_url"):
         pg = fx.fetch_page(p["faculty_url"])
         if pg.get("ok") and st.normalize_name(p["name"]).split()[-1] in st.normalize_name(pg["text"]):
             page_text = pg["text"]                      # only a page that actually mentions the person
-    o = ai.find_publications(p["name"], inst.get("name", ""), p.get("department", ""), p.get("title", ""), page_text)
-    base = {"llm_papers_checked": st.now_iso(), "llm_papers_ai": _ai_meta(o)}
-    if o.status == "STAFF_REVIEW":
+    papers, meta, failed = None, {}, ""
+    if llm_local.configured():
+        try:
+            papers, meta = _ask_local_model(p, inst, page_text)
+        except llm_local.LocalLLMError as e:
+            failed = str(e)
+            print(f"[pipeline] local model failed for {p['name']}: {failed}")
+    if papers is None and ai:
+        o = ai.find_publications(p["name"], inst.get("name", ""), p.get("department", ""), p.get("title", ""), page_text)
+        meta = _ai_meta(o)
+        if o.status != "STAFF_REVIEW":
+            papers = list(o.value or [])
+        else:
+            failed = (failed + " | " if failed else "") + o.last_error[:200]
+    base = {"llm_papers_checked": st.now_iso(), "llm_papers_ai": dict(meta, last_error=failed[:300]) if failed else meta}
+    if papers is None:
         return base, "LLM_FAILED"
-    papers = list(o.value or [])
     if not papers:
         return base, "NO_RESULT_FOUND"                  # the model knows of no papers: an accepted answer
     aid, verified = _llm_papers_to_author(p, inst, papers)
     if aid:
         return dict(base, openalex_author_id=aid, match_status="MATCHED", match_method="LLM_VERIFIED",
-                    match_note=f"Publications suggested by the AI ({o.model_used}) were verified in OpenAlex: "
+                    match_note=f"Publications suggested by the AI ({meta.get('model_used', '')}) were verified in OpenAlex: "
                                f"{len(verified)} work(s) with this author, e.g. \"{verified[0][:90]}\"."), ""
     return dict(base, match_note="The AI suggested publications, but none could be verified in OpenAlex for this person."), "NO_RESULT_FOUND"
 
@@ -383,6 +415,76 @@ def resolve_unmatched(p, inst, inst_oid):
     out["match_note"] = (p.get("match_note", "") + " " + out.get("match_note", "")).strip()
     out["identity_checked"] = st.now_iso()
     return out
+
+
+def run_grant_job(professor_id):
+    """One grant check for one MATCHED professor: their recent works' OpenAlex awards, kept only
+    where the professor is a named person on the award or their institution is the awardee."""
+    p = st.get_professor(professor_id)
+    inst = st.get_institution(p["institution_id"]) if p else None
+    if not p or not inst or not p.get("openalex_author_id"):
+        return {"ok": False, "message": "Professor not found or not matched to OpenAlex."}
+    resolve_institution(inst)
+    _ids, _subs, _flds, awards = ingest_works(p)
+    grants = discover_grants(dict(p), inst, awards)
+    st.update_professor(p["id"], {"grants": grants, "grant_count": len(grants), "last_grant_update": st.now_iso()})
+    st.recount(inst["id"])
+    st.invalidate_search()
+    return {"ok": True, "professor": p["name"], "university": inst["name"], "awards_on_papers": len(awards),
+            "grants_linked": len(grants), "grants": [st._clean(g) for g in st.db().grants.find({"_id": {"$in": [g["id"] for g in grants]}})]}
+
+
+def run_llm_identity_job(professor_id):
+    """Only the AI step of the identity chain, for one professor (to test the model end to end).
+    A match is stored; an empty or unverifiable answer goes to Staff review as NO_RESULT_FOUND."""
+    p = st.get_professor(professor_id)
+    inst = st.get_institution(p["institution_id"]) if p else None
+    if not p or not inst:
+        return {"ok": False, "message": "Professor not found."}
+    ai = _ai()
+    if not ai:
+        return {"ok": False, "message": "No AI model configured."}
+    fields, reason = _llm_publications(p, inst)
+    meta = fields.get("llm_papers_ai") or {}
+    if fields.get("match_status") == "MATCHED":
+        st.db().staff_review.delete_many({"task_type": "OPENALEX_IDENTITY", "professor_id": p["id"]})
+        fields.update(pipeline_done=False, identity_checked=st.now_iso())
+    elif reason:
+        flag_staff_review("OPENALEX_IDENTITY", reason, inst, p, source_url=p.get("faculty_url", ""),
+                          extra={"last_error": IDENTITY_REASONS.get(reason, reason), "department": p.get("department", "")})
+        if reason == "NO_RESULT_FOUND":
+            fields.update(match_status="NO_RESULT_FOUND", identity_checked=st.now_iso())
+    st.update_professor(p["id"], fields)
+    st.invalidate_search()
+    return {"ok": True, "professor": p["name"], "department": p.get("department", ""), "university": inst["name"],
+            "models": ai.chain(), "model_used": meta.get("model_used", ""), "result": fields.get("match_status") or reason,
+            "openalex_author_id": fields.get("openalex_author_id", ""), "note": fields.get("match_note", "")}
+
+
+def queue_test_job(kind, professor_id):
+    """Store a one-off job; the background worker runs it before anything else."""
+    jid = f"{kind}:{professor_id}"
+    st.db().jobs.replace_one({"_id": jid}, {"_id": jid, "kind": kind, "professor_id": professor_id,
+                                           "status": "QUEUED", "queued_at": st.now_iso()}, upsert=True)
+    return jid
+
+
+def run_next_job():
+    """Runs one queued one-off job (grant check / LLM identity). Returns a log message or ""."""
+    job = st.db().jobs.find_one({"status": "QUEUED"}, sort=[("queued_at", 1)])
+    if job is None:
+        return ""
+    st.db().jobs.update_one({"_id": job["_id"]}, {"$set": {"status": "RUNNING", "started_at": st.now_iso()}})
+    try:
+        res = run_grant_job(job["professor_id"]) if job["kind"] == "GRANT_CHECK" else run_llm_identity_job(job["professor_id"])
+        status = "DONE" if res.get("ok") else "FAILED"
+    except fx.RateLimited:
+        st.db().jobs.update_one({"_id": job["_id"]}, {"$set": {"status": "QUEUED"}})
+        raise
+    except Exception as e:
+        res, status = {"ok": False, "message": f"{type(e).__name__}: {str(e)[:300]}"}, "FAILED"
+    st.db().jobs.update_one({"_id": job["_id"]}, {"$set": {"status": status, "result": res, "finished_at": st.now_iso()}})
+    return f"Job {job['_id']}: {status} - {res.get('result') or res.get('grants_linked', res.get('message', ''))}"
 
 
 def scholar_backfill_one():
@@ -458,7 +560,10 @@ def award_role(p, inst, award):
         people.append(("CO_PI", award["co_lead_investigator"]))
     people += [("CO_PI", c) for c in award.get("co_lead_investigators") or []]
     people += [("INVESTIGATOR", c) for c in award.get("investigators") or []]
-    awarded = _sid((award.get("institution_awarded") or {}).get("id"))
+    # OpenAlex returns institution_awarded as one object or as a list of them
+    ia = award.get("institution_awarded") or []
+    awarded_ids = [_sid(x.get("id")) for x in (ia if isinstance(ia, list) else [ia]) if isinstance(x, dict)]
+    awarded = inst.get("openalex_institution_id") if inst.get("openalex_institution_id") in awarded_ids else (awarded_ids[0] if awarded_ids else "")
     for role, person in people:
         porcid = _sid(person.get("orcid"))
         if p.get("orcid") and porcid:
@@ -684,6 +789,9 @@ def step():
         if st.count_institutions() == 0:
             year, n, new = load_ipeds()
             return f"Loaded {n} research universities from IPEDS {year}."
+        msg = run_next_job()                   # one-off jobs queued by staff/tests go first
+        if msg:
+            return msg
         insts = queue()
         limited = bool(fx.rate_limit_status()["limited"])
         if not limited:

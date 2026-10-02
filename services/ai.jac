@@ -33,11 +33,18 @@ def chain() -> list[str] {
     if raw {
         return [m.strip() for m in raw.split(",") if m.strip()];
     }
-    if os.environ.get("OPENROUTER_API_KEY", "") {
-        return DEFAULT_CHAIN;
-    }
+    out: list[str] = [];
     single = os.environ.get("LLM_MODEL", "").strip();
-    return [single] if single else [];
+    # A local model (Ollama behind a tunnel) goes FIRST: it has no credit or daily limit.
+    if single and single.startswith("ollama") and os.environ.get("OLLAMA_API_BASE", "") {
+        out.append(single);
+    }
+    if os.environ.get("OPENROUTER_API_KEY", "") {
+        out = out + [m for m in DEFAULT_CHAIN if m not in out];
+    } elif single and single not in out {
+        out.append(single);
+    }
+    return out;
 }
 
 def configured() -> bool {
@@ -58,7 +65,18 @@ def _model(name: str) -> Model {
             base = os.environ.get("OLLAMA_API_BASE", "");
             if base { cfg["base_url"] = base; }
         }
-        _MODELS[name] = Model(model_name=name, api_key=key, config=cfg, call_params={"temperature": 0.0, "max_tokens": 4000});
+        params: dict = {"temperature": 0.0, "max_tokens": 4000};
+        if name.startswith("ollama") {
+            # a local model behind a quick tunnel: Cloudflare drops requests after ~100 s, so keep replies short
+            params["max_tokens"] = int(os.environ.get("OLLAMA_MAX_TOKENS", "700") or 700);
+        }
+        model_id = name;
+        if name.startswith("ollama/") or name.startswith("ollama_chat/") {
+            # chat route + thinking off: "thinking" models (qwen3) otherwise spend the reply on
+            # reasoning text and return no JSON, which fails every typed answer
+            model_id = "ollama_chat/" + name.split("/", 1)[1];
+        }
+        _MODELS[name] = Model(model_name=model_id, api_key=key, config=cfg, call_params=params);
     }
     return _MODELS[name];
 }
@@ -288,11 +306,11 @@ obj PublicationAnswer {
     has papers: list[KnownPaper] = [],
         reasoning: str = "";
 }
-sem PublicationAnswer.papers = "Works you are confident belong to this exact person. An EMPTY list is a correct, acceptable answer.";
-sem PublicationAnswer.reasoning = "One sentence on how you know (or why you do not).";
+sem PublicationAnswer.papers = "At most 5 works you are confident belong to this exact person. An EMPTY list is a correct, acceptable answer.";
+sem PublicationAnswer.reasoning = "One short sentence on how you know (or why you do not).";
 
 def _publications(professor_name: str, university: str, department: str, title: str, page_text: str) -> PublicationAnswer by cur();
-sem _publications = "ACCURACY FIRST. List publications of this specific professor ONLY if you are confident they were written by this exact person: same name, at this university, working in this department's field. Many people share a name - a work by a same-named person at another institution or in another field is WRONG and must be left out. It is completely fine, and often correct, that the professor has no publications you know of (many humanities and arts faculty publish books, exhibitions or performances, or nothing indexed); in that case return an empty list. Never guess, never invent titles or DOIs. Use the faculty page text if given.";
+sem _publications = "/no_think ACCURACY FIRST. List publications of this specific professor ONLY if you are confident they were written by this exact person: same name, at this university, working in this department's field. Many people share a name - a work by a same-named person at another institution or in another field is WRONG and must be left out. It is completely fine, and often correct, that the professor has no publications you know of (many humanities and arts faculty publish books, exhibitions or performances, or nothing indexed); in that case return an empty list. Never guess, never invent titles or DOIs. Use the faculty page text if given.";
 sem _publications.professor_name = "Full name as listed on the university's faculty directory.";
 sem _publications.university = "The university the professor works at now.";
 sem _publications.department = "The professor's department (their field).";
