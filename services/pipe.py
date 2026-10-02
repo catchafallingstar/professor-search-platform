@@ -315,7 +315,7 @@ def openalex_candidates(p, limit=5):
     """Real OpenAlex author records with this name (any institution), each with its institution
     history, top topics and a few recent work titles - the only options the local model may pick."""
     out = []
-    for a in fx.search_authors(p["name"], "")[:10]:
+    for a in fx.search_authors(p["name"], "")[:6]:
         if not names_match(p["name"], a.get("display_name") or ""):
             continue
         insts = [i.get("display_name") for i in a.get("last_known_institutions") or [] if i.get("display_name")]
@@ -323,14 +323,14 @@ def openalex_candidates(p, limit=5):
             n = (af.get("institution") or {}).get("display_name")
             if n and n not in insts:
                 insts.append(n)
-        topics = [t.get("display_name") for t in (a.get("topics") or [])[:5] if t.get("display_name")]
+        topics = [t.get("display_name") for t in (a.get("topics") or [])[:2] if t.get("display_name")]
         out.append({"id": _sid(a.get("id")), "name": a.get("display_name") or "", "works_count": int(a.get("works_count") or 0),
                     "institutions": insts[:6], "topics": topics, "works": []})
         if len(out) >= limit:
             break
     for c in out:                                   # a few recent work titles per candidate
         try:
-            c["works"] = [(w.get("title") or "")[:110] for w in fx.fetch_author_works(c["id"], 2015)[:5] if w.get("title")]
+            c["works"] = [(w.get("title") or "")[:70] for w in fx.fetch_author_works(c["id"], 2015)[:2] if w.get("title")]
         except fx.RateLimited:
             raise
         except Exception:
@@ -366,15 +366,10 @@ def _local_llm_pick(p, inst):
 
 
 def _llm_publications(p, inst):
-    """Last resort. Local model first: it only chooses among real OpenAlex candidates, and the
-    choice is re-checked against the university. Without a local model, the cloud by-llm chain
-    names publications and each one must be verified in OpenAlex.
-    Returns (fields, reason) like the other steps; reason "" with no fields = AI not configured."""
+    """Last resort. Local model chooses among real OpenAlex candidates; Python confirms
+    name and university. Only use the cloud publication task when no local model is configured."""
     from services import llm_local
     ai = _ai()
-    if not ai and not llm_local.configured():
-        return {}, ""
-    failed = ""
     if llm_local.configured():
         try:
             return _local_llm_pick(p, inst)
@@ -383,8 +378,11 @@ def _llm_publications(p, inst):
         except llm_local.LocalLLMError as e:
             failed = str(e)
             print(f"[pipeline] local model failed for {p['name']}: {failed}")
+            return {"llm_papers_checked": st.now_iso(),
+                    "llm_papers_ai": {"model_used": os.environ.get("LLM_MODEL", ""), "last_error": failed[:300]}}, "LLM_FAILED"
+    ai = _ai()
     if not ai:
-        return {"llm_papers_checked": st.now_iso(), "llm_papers_ai": {"model_used": os.environ.get("LLM_MODEL", ""), "last_error": failed[:300]}}, "LLM_FAILED"
+        return {}, ""
     page_text = ""
     if p.get("faculty_url"):
         pg = fx.fetch_page(p["faculty_url"])
