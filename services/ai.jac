@@ -47,6 +47,16 @@ def chain() -> list[str] {
     return out;
 }
 
+def page_cap(cloud_limit: int) -> int {
+    # Local Ollama models usually run with a 4096-token context: a long page overflows it and
+    # every attempt fails. ~6000 chars of page text leaves room for the prompt and the answer.
+    models = chain();
+    if models and models[0].startswith("ollama") {
+        return min(cloud_limit, int(os.environ.get("OLLAMA_PAGE_CHARS", "6000") or 6000));
+    }
+    return cloud_limit;
+}
+
 def configured() -> bool {
     return len(chain()) > 0;
 }
@@ -84,7 +94,7 @@ def _model(name: str) -> Model {
 # ---------- outcome of one AI task ----------
 
 obj AiOutcome {
-    has status: str = "",            # VALID_RESULT | VALID_EMPTY | UNCERTAIN | STAFF_REVIEW
+    has status: str = "",            # VALID_RESULT | VALID_EMPTY | UNCERTAIN | STAFF_REVIEW | RETRY_LATER
         value: any = None,
         model_used: str = "",
         attempt_number: int = 0,
@@ -139,6 +149,13 @@ def run_task(fn: any, args: list, check: any, escalate_uncertain: bool = False) 
             } except Exception as e {
                 out.error_kind = _kind(e);
                 out.last_error = str(e)[:300];
+                if isinstance(e, NameError) {
+                    # a hot reload of this module left the by-llm call pointing at stale types:
+                    # a code problem, not a model failure - stop and let the caller retry later
+                    out.error_kind = "CODE_RELOAD";
+                    out.status = "RETRY_LATER";
+                    return out;
+                }
                 if out.error_kind == "RATE_LIMITED" { time.sleep(5); }
             }
         }
@@ -191,7 +208,7 @@ def _check_kind(raw: any) -> list {
 }
 
 def classify_page(page_text: str, url: str) -> AiOutcome {
-    return run_task(_classify_page, [page_text[:14000], url], _check_kind);
+    return run_task(_classify_page, [page_text[:page_cap(14000)], url], _check_kind);
 }
 
 # ---------- task 3: faculty extraction from a hard page ----------
@@ -223,7 +240,7 @@ def extract_faculty(page_text: str, department: str) -> AiOutcome {
         rows = [r for r in raw.faculty if r.name.strip() and r.name.strip().lower() in low];
         return ["VALID_RESULT" if rows else "VALID_EMPTY", rows];
     }
-    return run_task(_extract_faculty, [page_text[:30000], department], check, True);
+    return run_task(_extract_faculty, [page_text[:page_cap(30000)], department], check, True);
 }
 
 # ---------- task 4: faculty profile details ----------
@@ -253,7 +270,7 @@ def _check_profile(raw: any) -> list {
 }
 
 def extract_profile(page_text: str, professor_name: str) -> AiOutcome {
-    return run_task(_profile, [page_text[:14000], professor_name], _check_profile);
+    return run_task(_profile, [page_text[:page_cap(14000)], professor_name], _check_profile);
 }
 
 # ---------- task 5: hiring signal on an already-fetched page ----------
@@ -286,7 +303,7 @@ def _check_hiring(raw: any) -> list {
 
 def extract_hiring(page_text: str, professor_name: str) -> AiOutcome {
     # UNCERTAIN is a valid hiring classification: not escalated.
-    return run_task(_hiring, [page_text[:20000], professor_name], _check_hiring);
+    return run_task(_hiring, [page_text[:page_cap(20000)], professor_name], _check_hiring);
 }
 
 # ---------- task 6: publications of a professor nobody else could identify ----------
@@ -325,5 +342,5 @@ def _check_publications(raw: any) -> list {
 
 def find_publications(professor_name: str, university: str, department: str, title: str, page_text: str) -> AiOutcome {
     # VALID_EMPTY ("no papers") is a real answer and is not escalated to the next model.
-    return run_task(_publications, [professor_name, university, department, title, page_text[:10000]], _check_publications);
+    return run_task(_publications, [professor_name, university, department, title, page_text[:page_cap(10000)]], _check_publications);
 }

@@ -175,8 +175,8 @@ def:pub ProfilePage() -> JsxElement {
 
                 <Card className="shadow-sm">
                     <CardHeader>
-                        <CardTitle>{"Recent Papers"}</CardTitle>
-                        <CardDescription>{str(len(p.papers)) + (" paper" if len(p.papers) == 1 else " papers") + " from the last five years"}</CardDescription>
+                        <CardTitle>{"Publications" if p.match_method == "FACULTY_PAGE" else "Recent Papers"}</CardTitle>
+                        <CardDescription>{str(len(p.papers)) + (" work" if len(p.papers) == 1 else " works") + " listed on the official faculty page" if p.match_method == "FACULTY_PAGE" else str(len(p.papers)) + (" paper" if len(p.papers) == 1 else " papers") + " from the last five years"}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         {<div className="flex flex-col">

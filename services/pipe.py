@@ -449,6 +449,15 @@ def resolve_unmatched(p, inst, inst_oid):
             return {}                          # web search cooling down: keep the professor for later
         last_url = got.get("scholar_url") or last_url
         reason = why or reason
+    # 4. no external identity: use publications/grants listed on the official faculty page
+    try:
+        fp = use_faculty_page(p, inst)
+    except Exception as e:
+        print(f"[pipeline] faculty-page fallback failed for {p['name']}: {e}")
+        fp = {}
+    if fp:
+        st.db().staff_review.delete_many({"task_type": "OPENALEX_IDENTITY", "professor_id": p["id"]})
+        return dict(out, **fp)
     if out.get("llm_papers_checked") and reason == "LLM_FAILED":
         final = "LLM_FAILED"
     else:
@@ -506,6 +515,114 @@ def run_llm_identity_job(professor_id):
             "openalex_author_id": fields.get("openalex_author_id", ""), "note": fields.get("match_note", "")}
 
 
+def use_faculty_page(p, inst):
+    """No OpenAlex / Scholar / ORCID identity: take publications and grants from the professor's
+    own official faculty page. Returns the professor fields to store, or {} if the page lists none."""
+    from services import facultypage as fpg
+    url = p.get("faculty_url") or ""
+    if not url:
+        return {}
+    pubs, grs, ok = fpg.from_page(url)
+    if not ok or not (pubs or grs):
+        return {}
+    ids, grant_links = [], []
+    for x in pubs:
+        pid = fpg.item_id("FP", p["id"], x["title"])
+        st.upsert_paper({"openalex_work_id": pid, "doi": "", "title": x["title"], "publication_year": x["year"],
+                         "publication_date": f"{x['year']}-01-01" if x["year"] else "", "source_name": x["venue_text"][:200],
+                         "paper_url": x["url"] or url, "citation_count": 0, "subfield": "", "field": "",
+                         "source": "FACULTY_PAGE", "faculty_page_url": url})
+        ids.append(pid)
+    for g in grs:
+        gid = fpg.item_id("FG", p["id"], g["title"])
+        st.upsert_grant({"openalex_award_id": gid, "title": g["title"], "funder_name": g["funder_name"], "funder_award_id": "",
+                         # no start date: a year in the same sentence usually belongs to something else
+                         "amount": 0.0, "currency": "", "start_date": "", "end_date": "",
+                         "landing_page_url": url, "evidence": g["evidence"], "source": "FACULTY_PAGE"})
+        grant_links.append({"id": gid, "role": "RECIPIENT"})
+    return {"paper_ids": ids, "grants": grant_links, "grant_count": len(grant_links), "match_status": "FACULTY_PAGE",
+            "match_method": "FACULTY_PAGE",
+            "match_note": f"No OpenAlex, Google Scholar or ORCID identity. {len(ids)} publications and {len(grant_links)} grants/fellowships "
+                          f"taken from the official faculty page ({url}).",
+            "last_openalex_update": st.now_iso(), "last_grant_update": st.now_iso(), "identity_checked": st.now_iso()}
+
+
+def retry_review_item(item_id):
+    """Re-run the task behind one open staff review item. Clears it on success; a new failure
+    re-flags it with the CURRENT error, so the list only shows real, present-day problems."""
+    d = st.db()
+    item = d.staff_review.find_one({"_id": item_id})
+    if not item:
+        return {"ok": False, "message": "Review item not found."}
+    t, pid = item.get("task_type"), item.get("professor_id")
+    p = st.get_professor(pid) if pid else None
+    inst = st.get_institution(item.get("institution_id") or (p or {}).get("institution_id", ""))
+    if inst is None:
+        return {"ok": False, "message": "University not found."}
+    res = "STILL_FAILING"
+    if t == "PROFILE_EXTRACTION" and p:
+        d.staff_review.delete_one({"_id": item_id})
+        fields = enrich_profile(dict(p, profile_extracted=False), inst)
+        if fields.get("profile_extracted"):
+            st.update_professor(p["id"], fields)
+            res = "FIXED"
+        elif not fields and not d.staff_review.find_one({"task_type": t, "professor_id": pid, "resolved": False}):
+            # page unreachable or reload hiccup: nothing was decided, keep the item and try later
+            d.staff_review.replace_one({"_id": item_id}, item, upsert=True)
+            res = "RETRY_LATER"
+        # else enrich_profile re-flagged it with the current error -> STILL_FAILING
+    elif t == "HIRING_EXTRACTION" and p:
+        d.staff_review.delete_one({"_id": item_id})
+        h = check_hiring(p, inst)
+        if h is None:
+            d.staff_review.replace_one({"_id": item_id}, item, upsert=True)
+            res = "RETRY_LATER"
+        elif h["status"] != "STAFF_REVIEW":
+            st.update_professor(p["id"], {"hiring": h, "has_hiring": h["status"] in HIRING_POSITIVE,
+                                          "hiring_status": h["status"], "last_hiring_update": h["checked_at"]})
+            res = "FIXED"
+    elif t == "OPENALEX_IDENTITY" and p:
+        d.staff_review.delete_one({"_id": item_id})
+        fields, reason = _llm_publications(p, inst)
+        if fields.get("match_status") != "MATCHED":
+            fp = use_faculty_page(p, inst)
+            if fp:
+                st.update_professor(p["id"], dict(fields, **fp))
+                st.invalidate_search()
+                return {"ok": True, "item": item_id, "task_type": t, "professor": p["name"], "result": "FACULTY_PAGE",
+                        "publications": len(fp["paper_ids"]), "grants": fp["grant_count"]}
+        if fields.get("match_status") == "MATCHED":
+            st.update_professor(p["id"], dict(fields, pipeline_done=False, identity_checked=st.now_iso()))
+            st.update_institution(inst["id"], {"pipeline_state": "PROCESSING"})
+            res = "FIXED"
+        else:
+            if fields:
+                st.update_professor(p["id"], fields)
+            flag_staff_review(t, reason or "NO_RESULT_FOUND", inst, p, source_url=p.get("faculty_url", ""),
+                              extra={"last_error": IDENTITY_REASONS.get(reason, reason) + (
+                                  " " + fields.get("match_note", "") if fields.get("match_note") else ""),
+                                  "department": p.get("department", "")})
+            if reason == "NO_RESULT_FOUND":
+                st.update_professor(p["id"], {"match_status": "NO_RESULT_FOUND", "identity_checked": st.now_iso()})
+            res = "NO_RESULT_FOUND" if reason == "NO_RESULT_FOUND" else "STILL_FAILING"
+    else:
+        return {"ok": False, "message": f"No automatic retry for task type {t}."}
+    st.invalidate_search()
+    return {"ok": True, "item": item_id, "task_type": t, "professor": (p or {}).get("name", ""), "result": res}
+
+
+def queue_review_retries(task_type=""):
+    """Queue a retry job for every open review item (optionally one task type)."""
+    q = {"resolved": False}
+    if task_type:
+        q["task_type"] = task_type
+    n = 0
+    for item in st.db().staff_review.find(q, {"_id": 1}):
+        queue_test_job("REVIEW_RETRY", item["_id"])
+        n += 1
+    return n
+
+
 def queue_test_job(kind, professor_id):
     """Store a one-off job; the background worker runs it before anything else."""
     jid = f"{kind}:{professor_id}"
@@ -521,8 +638,16 @@ def run_next_job():
         return ""
     st.db().jobs.update_one({"_id": job["_id"]}, {"$set": {"status": "RUNNING", "started_at": st.now_iso()}})
     try:
-        res = run_grant_job(job["professor_id"]) if job["kind"] == "GRANT_CHECK" else run_llm_identity_job(job["professor_id"])
+        if job["kind"] == "GRANT_CHECK":
+            res = run_grant_job(job["professor_id"])
+        elif job["kind"] == "REVIEW_RETRY":
+            res = retry_review_item(job["professor_id"])
+        else:
+            res = run_llm_identity_job(job["professor_id"])
         status = "DONE" if res.get("ok") else "FAILED"
+        if res.get("result") == "RETRY_LATER":
+            status = "QUEUED"                  # could not run right now (search cooldown / reload): try again
+            st.db().jobs.update_one({"_id": job["_id"]}, {"$set": {"queued_at": st.now_iso()}})
     except fx.RateLimited:
         st.db().jobs.update_one({"_id": job["_id"]}, {"$set": {"status": "QUEUED"}})
         raise
@@ -690,6 +815,8 @@ def enrich_profile(p, inst):
     if not page.get("ok"):
         return {}                     # page unreachable now; try again on the next run
     o = ai.extract_profile(page["text"], p["name"])
+    if o.status == "RETRY_LATER":
+        return {}                     # code reload hiccup, not a model failure; retried on the next run
     if o.status == "STAFF_REVIEW":
         flag_staff_review("PROFILE_EXTRACTION", "ALL_LLM_FALLBACKS_FAILED", inst, p, p["faculty_url"], o)
         return {}
@@ -722,6 +849,8 @@ def _hiring_on_page(ai, p, inst, url, method):
     if not page.get("ok"):
         return "NONE", None
     o = ai.extract_hiring(page["text"], p["name"])
+    if o.status == "RETRY_LATER":
+        return "RETRY", None
     if o.status == "STAFF_REVIEW":
         return "FAILED", o
     if o.status == "VALID_EMPTY":
@@ -754,6 +883,8 @@ def check_hiring(p, inst):
             continue
         seen.add(url)
         kind, rec = _hiring_on_page(ai, p, inst, url, method)
+        if kind == "RETRY":
+            return None                # keep the previous result; re-checked on the next run
         if kind == "FOUND":
             return dict(rec, checked_at=ts, date_found=ts)
         if kind == "UNCERTAIN" and uncertain is None:
@@ -776,6 +907,8 @@ def check_hiring(p, inst):
             continue
         seen.add(url)
         kind, rec = _hiring_on_page(ai, p, inst, url, "search_result")
+        if kind == "RETRY":
+            return None
         if kind == "FOUND":
             return dict(rec, checked_at=ts, date_found=ts)
         if kind == "UNCERTAIN" and uncertain is None:
