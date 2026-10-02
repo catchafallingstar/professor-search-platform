@@ -235,7 +235,7 @@ def llm_configured():
 
 def llm_reachable():
     """For Ollama: is the tunnel to the other computer up? Returns (ok, message)."""
-    base = os.environ.get("OLLAMA_API_BASE", "").rstrip("/")
+    base = os.environ.get("OLLAMA_API_BASE", "").strip().rstrip("/")
     if not base:
         return (llm_configured(), "cloud model" if llm_configured() else "no LLM configured")
     try:

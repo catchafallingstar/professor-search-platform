@@ -62,7 +62,7 @@ def _model(name: str) -> Model {
         if name.startswith("openrouter/") {
             key = os.environ.get("OPENROUTER_API_KEY", "");
         } elif name.startswith("ollama") {
-            base = os.environ.get("OLLAMA_API_BASE", "");
+            base = os.environ.get("OLLAMA_API_BASE", "").strip();
             if base { cfg["base_url"] = base; }
         }
         params: dict = {"temperature": 0.0, "max_tokens": 4000};

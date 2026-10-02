@@ -9,6 +9,7 @@ in a loop. Every write goes straight to MongoDB, so nothing is lost on a sandbox
 """
 
 import os
+import re
 import time
 import threading
 
@@ -306,45 +307,91 @@ def _llm_papers_to_author(p, inst, papers):
     return (best if list(votes.values()).count(votes[best]) == 1 else ""), verified
 
 
-class _Paper:
-    def __init__(self, d):
-        self.title = str(d.get("title") or "").strip()
-        self.doi = str(d.get("doi") or "").strip()
-        self.year = int(d.get("year") or 0)
-        self.confidence = float(d.get("confidence") or 0)
+def _uni_core(name):
+    return re.split(r"\s*[-,]\s*", name or "")[0].strip()
 
 
-def _ask_local_model(p, inst, page_text):
-    """Local Ollama model (streamed, thinking off). Returns (papers, meta) or raises LocalLLMError."""
+def openalex_candidates(p, limit=5):
+    """Real OpenAlex author records with this name (any institution), each with its institution
+    history, top topics and a few recent work titles - the only options the local model may pick."""
+    out = []
+    for a in fx.search_authors(p["name"], "")[:10]:
+        if not names_match(p["name"], a.get("display_name") or ""):
+            continue
+        insts = [i.get("display_name") for i in a.get("last_known_institutions") or [] if i.get("display_name")]
+        for af in a.get("affiliations") or []:
+            n = (af.get("institution") or {}).get("display_name")
+            if n and n not in insts:
+                insts.append(n)
+        topics = [t.get("display_name") for t in (a.get("topics") or [])[:5] if t.get("display_name")]
+        out.append({"id": _sid(a.get("id")), "name": a.get("display_name") or "", "works_count": int(a.get("works_count") or 0),
+                    "institutions": insts[:6], "topics": topics, "works": []})
+        if len(out) >= limit:
+            break
+    for c in out:                                   # a few recent work titles per candidate
+        try:
+            c["works"] = [(w.get("title") or "")[:110] for w in fx.fetch_author_works(c["id"], 2015)[:5] if w.get("title")]
+        except fx.RateLimited:
+            raise
+        except Exception:
+            c["works"] = []
+    return out
+
+
+def _local_llm_pick(p, inst):
+    """Retrieve-then-verify with the local model. Returns (fields, reason) or raises LocalLLMError."""
     from services import llm_local
-    ans = llm_local.find_publications(p["name"], inst.get("name", ""), p.get("department", ""), p.get("title", ""), page_text)
-    papers = [_Paper(x) for x in (ans.get("papers") or []) if isinstance(x, dict)]
-    papers = [k for k in papers if k.title and k.confidence >= 0.8][:5]
-    return papers, {"model_used": os.environ.get("LLM_MODEL", ""), "attempt_number": 1, "fallback_count": 0,
-                    "reasoning": str(ans.get("reasoning") or "")[:300]}
+    cands = openalex_candidates(p)
+    meta = {"model_used": os.environ.get("LLM_MODEL", "").strip(), "attempt_number": 1, "fallback_count": 0,
+            "candidates": [{"id": c["id"], "institutions": c["institutions"][:3]} for c in cands]}
+    base = {"llm_papers_checked": st.now_iso()}
+    if not cands:
+        return dict(base, llm_papers_ai=meta, match_note="No OpenAlex author with this name at all."), "NO_RESULT_FOUND"
+    ans = llm_local.pick_candidate({"name": p["name"], "title": p.get("title", ""), "department": p.get("department", ""),
+                                    "university": inst.get("name", "")}, cands)
+    meta.update(choice=ans["choice"], confidence=ans["confidence"], reason=ans["reason"])
+    base["llm_papers_ai"] = meta
+    idx = ord(ans["choice"][0]) - 65 if ans["choice"] and ans["choice"] != "NONE" and ans["choice"][0].isalpha() else -1
+    if idx < 0 or idx >= len(cands) or ans["confidence"] < 0.7:
+        return dict(base, match_note=f"The AI ({meta['model_used']}) did not pick any of {len(cands)} OpenAlex candidates: {ans['reason']}"), "NO_RESULT_FOUND"
+    c = cands[idx]
+    # safety check: the pick must really carry this university in its OpenAlex institution history
+    uni = st.normalize_name(_uni_core(inst.get("name", "")))
+    if not any(uni in st.normalize_name(i) for i in c["institutions"]):
+        return dict(base, match_note=f"The AI picked OpenAlex author {c['id']}, but its institutions ({', '.join(c['institutions'][:3]) or 'none'}) "
+                                     f"do not include {_uni_core(inst.get('name', ''))}; not accepted."), "NO_RESULT_FOUND"
+    return dict(base, openalex_author_id=c["id"], match_status="MATCHED", match_method="LLM_VERIFIED",
+                match_note=f"The AI ({meta['model_used']}) chose OpenAlex author {c['id']} from {len(cands)} candidates "
+                           f"(confidence {ans['confidence']:.2f}: {ans['reason']}); {_uni_core(inst.get('name', ''))} confirmed in its affiliations."), ""
 
 
 def _llm_publications(p, inst):
-    """Last resort: ask the LLM (accuracy first, empty is fine), then verify in OpenAlex.
-    Local Ollama model first (no credit limits); if it fails, the cloud by-llm chain.
+    """Last resort. Local model first: it only chooses among real OpenAlex candidates, and the
+    choice is re-checked against the university. Without a local model, the cloud by-llm chain
+    names publications and each one must be verified in OpenAlex.
     Returns (fields, reason) like the other steps; reason "" with no fields = AI not configured."""
     from services import llm_local
     ai = _ai()
     if not ai and not llm_local.configured():
         return {}, ""
+    failed = ""
+    if llm_local.configured():
+        try:
+            return _local_llm_pick(p, inst)
+        except fx.RateLimited:
+            raise
+        except llm_local.LocalLLMError as e:
+            failed = str(e)
+            print(f"[pipeline] local model failed for {p['name']}: {failed}")
+    if not ai:
+        return {"llm_papers_checked": st.now_iso(), "llm_papers_ai": {"model_used": os.environ.get("LLM_MODEL", ""), "last_error": failed[:300]}}, "LLM_FAILED"
     page_text = ""
     if p.get("faculty_url"):
         pg = fx.fetch_page(p["faculty_url"])
         if pg.get("ok") and st.normalize_name(p["name"]).split()[-1] in st.normalize_name(pg["text"]):
             page_text = pg["text"]                      # only a page that actually mentions the person
-    papers, meta, failed = None, {}, ""
-    if llm_local.configured():
-        try:
-            papers, meta = _ask_local_model(p, inst, page_text)
-        except llm_local.LocalLLMError as e:
-            failed = str(e)
-            print(f"[pipeline] local model failed for {p['name']}: {failed}")
-    if papers is None and ai:
+    papers, meta = None, {}
+    if True:
         o = ai.find_publications(p["name"], inst.get("name", ""), p.get("department", ""), p.get("title", ""), page_text)
         meta = _ai_meta(o)
         if o.status != "STAFF_REVIEW":
