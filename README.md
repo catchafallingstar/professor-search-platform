@@ -3,7 +3,7 @@ Live on : https://preview-jac-sbx-38b138156c9546d881e84ebecc5fd447.jachammer.app
 
 **Helping students find professors, understand their recent research, discover funding, and identify current research opportunities in one place.**
 
-Road to Research is a professor discovery platform built for **JacHacks A2Tech360** using **Jac, JacHammer, and AI-assisted research**.
+Road to Research is a professor discovery platform built for **JacHacks A2Tech360** using **Jac, JacHammer, OpenAlex, and AI-assisted research**.
 
 ## Links
 
