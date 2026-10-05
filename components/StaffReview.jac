@@ -10,10 +10,12 @@ import from .ui.badge { Badge }
 import from .ui.spinner { Spinner }
 import from .ui.table { Table, TableHeader, TableBody, TableRow, TableHead, TableCell }
 import from .ui.empty { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription }
-sv import from ..services.queue { list_staff_review, resolve_staff_review, ReviewItem, StepResult }
+sv import from ..services.queue { list_staff_review, resolve_staff_review, requeue_staff_review, ReviewItem, StepResult }
 
 glob TASK_LABELS: dict[str, str] = {
     "OPENALEX_IDENTITY": "OpenAlex identity",
+    "GRANT_SEARCH": "Grant search",
+    "HIRING_EXTRACTION": "Hiring check",
     "FACULTY_DIRECTORY_DISCOVERY": "Faculty directory",
     "FACULTY_EXTRACTION": "Faculty list",
     "PROFILE_EXTRACTION": "Faculty profile",
@@ -23,7 +25,21 @@ glob TASK_LABELS: dict[str, str] = {
 def:pub StaffReview() -> JsxElement {
     has items: list[ReviewItem] = [],
         loading: bool = True,
+        requeuing: bool = False,
+        notice: str = "",
         error: str = "";
+
+    async def requeue() -> None {
+        requeuing = True;
+        try {
+            r: StepResult = await requeue_staff_review();
+            notice = r.message;
+            error = "";
+        } except Exception as e {
+            error = "Could not re-queue: " + str(e);
+        }
+        requeuing = False;
+    }
 
     async def load() -> None {
         try {
@@ -58,10 +74,14 @@ def:pub StaffReview() -> JsxElement {
                 <div className="flex items-center gap-2">
                     {not loading and <Badge variant="secondary">{str(len(items)) + " open"}</Badge>}
                     <Button variant="outline" size="sm" onClick={lambda { loading = True; load(); }}>{"Refresh"}</Button>
+                    <Button size="sm" onClick={requeue} disabled={requeuing or len(items) == 0}>
+                        {requeuing and <Spinner />}{"Re-queue"}
+                    </Button>
                 </div>
             </div>
         </CardHeader>
         <CardContent>
+            {notice and <p className="pb-3 text-sm text-muted-foreground">{notice}</p>}
             {error and <p className="pb-3 text-sm text-destructive">{error}</p>}
             {loading and <div className="flex items-center gap-2 pt-6 pb-6 text-sm text-muted-foreground"><Spinner />{"Loading review items..."}</div>}
             {not loading and len(items) == 0 and not error and <Empty className="border border-dashed pt-10 pb-10">

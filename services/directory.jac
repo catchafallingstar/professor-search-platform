@@ -61,7 +61,9 @@ obj GrantView {
         currency: str = "",
         start_date: str = "",
         end_date: str = "",
-        url: str = "";
+        url: str = "",
+        source: str = "",
+        evidence: str = "";
 }
 
 obj ProfessorDetail {
@@ -168,9 +170,13 @@ def:pub get_professor_profile(professor_id: str) -> ProfessorDetail | None {
             funder_award_id=str(g2.get("funder_award_id", "")), role=roles.get(str(g2.get("id", "")), ""),
             amount=float(g2.get("amount") or 0.0), currency=str(g2.get("currency", "")),
             start_date=str(g2.get("start_date", "")), end_date=str(g2.get("end_date", "")),
-            url=str(g2.get("landing_page_url", ""))
+            url=str(g2.get("landing_page_url", "")),
+            source=str(g2.get("source") or ("OPENALEX" if not str(g2.get("id", "")).startswith(("FG", "NSF-", "NIH-")) else "")),
+            evidence=str(g2.get("evidence", "") or "")
         ));
     }
+    # newest award first; undated ones last
+    grants.sort(key=lambda (v: GrantView) -> str { return v.start_date or "0000"; }, reverse=True);
     anchors = [
         AnchorView(
             title=str(a.get("title", "")), doi=str(a.get("doi", "")), year=int(a.get("publication_year") or 0),

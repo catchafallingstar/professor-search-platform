@@ -36,18 +36,31 @@ def years_label(start: str, end: str) -> str {
     return s or e;
 }
 
-def:pub GrantRow(g: GrantView) -> JsxElement {
+glob ROLE_LABELS: dict[str, str] = {
+    "PI": "Principal investigator", "CO_PI": "Co-principal investigator", "MULTI_PI": "Multiple-PI award",
+    "INVESTIGATOR": "Investigator", "RECIPIENT": "Fellowship recipient"
+};
+glob SOURCE_LABELS: dict[str, str] = {
+    "NSF": "NSF Award Search", "NIH": "NIH RePORTER", "FACULTY_PAGE": "Official faculty page", "OPENALEX": "OpenAlex"
+};
+
+def:pub GrantRow(g: GrantView, name: str) -> JsxElement {
     yl = years_label(g.start_date, g.end_date);
-    return <div className="flex flex-col gap-1.5 rounded-lg border bg-muted/30 pt-3 pb-3 pl-4 pr-4">
-        {g.funder_name and <span className="text-xs font-medium text-muted-foreground">{g.funder_name}</span>}
-        <span className="font-medium leading-snug">{g.title or "Untitled award"}</span>
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
-            {g.role and <span>{"Role: " + g.role.replace("_", "-")}</span>}
-            {g.funder_award_id and <span>{"Award: " + g.funder_award_id}</span>}
-            {yl and <span className="tabular-nums">{yl}</span>}
-            {g.amount > 0 and <span className="tabular-nums">{fmt_amount(g.amount, g.currency)}</span>}
+    who = name + " (" + ROLE_LABELS.get(g.role, g.role.replace("_", " ")) + ")" if g.role else name;
+    return <div className="flex gap-4 border-b pt-3 pb-3 last:border-b-0">
+        <span className="w-20 shrink-0 text-sm font-medium tabular-nums text-muted-foreground">{yl or "Year not stated"}</span>
+        <div className="flex min-w-0 flex-col gap-1">
+            {g.funder_name and <span className="text-xs font-medium text-muted-foreground">{g.funder_name}</span>}
+            <span className="font-medium leading-snug">{g.title or "Untitled award"}</span>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                <span>{"Awarded to " + who}</span>
+                {g.funder_award_id and <span>{"Award " + g.funder_award_id}</span>}
+                {g.amount > 0 and <span className="tabular-nums">{fmt_amount(g.amount, g.currency)}</span>}
+                {g.source and <span>{"Source: " + SOURCE_LABELS.get(g.source, g.source)}</span>}
+            </div>
+            {g.evidence and <span className="text-xs italic text-muted-foreground">{"\"" + g.evidence + "\""}</span>}
+            {g.url and <a href={g.url} target="_blank" rel="noreferrer" className="w-fit text-xs text-primary underline-offset-4 hover:underline">{"Faculty page" if g.source == "FACULTY_PAGE" else "Award page"}</a>}
         </div>
-        {g.url and <a href={g.url} target="_blank" rel="noreferrer" className="text-sm text-primary underline-offset-4 hover:underline">{"Award page"}</a>}
     </div>;
 }
 
@@ -161,7 +174,7 @@ def:pub ProfilePage() -> JsxElement {
 
         <div className="grid gap-6 lg:grid-cols-3">
             <div className="flex flex-col gap-6 lg:col-span-2">
-                <Card className="shadow-sm">
+                {p.match_method != "FACULTY_PAGE" and <Card className="shadow-sm">
                     <CardHeader>
                         <CardTitle>{"Recent Paper Subfields"}</CardTitle>
                         <CardDescription>{"Distinct OpenAlex subfields across recent papers. Department comes from the university."}</CardDescription>
@@ -171,7 +184,7 @@ def:pub ProfilePage() -> JsxElement {
                             {for s in p.subfields { <Badge key={s} variant="secondary">{s}</Badge> }}
                         </div> if len(p.subfields) > 0 else <p className="text-sm text-muted-foreground">{"No subfields collected yet. Run the pipeline to pull recent papers."}</p>}
                     </CardContent>
-                </Card>
+                </Card>}
 
                 <Card className="shadow-sm">
                     <CardHeader>
@@ -191,13 +204,13 @@ def:pub ProfilePage() -> JsxElement {
 
                 <Card className="shadow-sm">
                     <CardHeader>
-                        <CardTitle>{"Grants"}</CardTitle>
-                        <CardDescription>{"Only awards that list this professor as PI, Co-PI or investigator."}</CardDescription>
+                        <CardTitle>{"Grants and fellowships"}</CardTitle>
+                        <CardDescription>{"Last 10 years, newest first. From NSF and NIH award records, OpenAlex, and the official faculty page."}</CardDescription>
                     </CardHeader>
-                    <CardContent className="flex flex-col gap-3">
-                        {for g in p.grants { <GrantRow key={g.id} g={g} /> }}
+                    <CardContent className="flex flex-col">
+                        {for g in p.grants { <GrantRow key={g.id} g={g} name={p.name} /> }}
                         {len(p.grants) == 0 and <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                            <HugeiconsIcon icon={Money03Icon} strokeWidth={2} className="size-4" />{"No grants found where this professor is listed as an investigator."}
+                            <HugeiconsIcon icon={Money03Icon} strokeWidth={2} className="size-4" />{"No grants or fellowships found in the last 10 years."}
                         </div>}
                     </CardContent>
                 </Card>

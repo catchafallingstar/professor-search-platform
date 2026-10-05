@@ -13,6 +13,7 @@ Every record keeps the faculty page URL as its source.
 
 import hashlib
 import re
+import urllib.parse
 
 from services import fetchers as fx
 
@@ -86,19 +87,55 @@ def grants(text, limit=10):
         if key in seen:
             continue
         seen.add(key)
-        yr = YEAR.findall(sent)
+        # the award year only when it sits right next to the award name ("2019 NEA Fellowship",
+        # "NEH Fellowship (2021)"); a year elsewhere in the sentence usually belongs to something else
+        near = sent[max(0, i - 12):i + (m.end() if m else len(funder)) + 12]
+        yr = YEAR.findall(near)
         out.append({"title": title[:200], "funder_name": funder, "evidence": _clean(sent)[:400], "year": int(yr[-1]) if yr else 0})
         if len(out) >= limit:
             break
     return out
 
 
-def from_page(url):
-    """Fetch the faculty page once and return (publications, grants, ok)."""
+HOME_WORDS = re.compile(r"\b(personal (web)?site|personal page|homepage|home page|website|lab(oratory)? (site|page|website)|research group|my site|cv|curriculum vitae)\b", re.I)
+SKIP_HOSTS = ("twitter.com", "x.com", "facebook.com", "instagram.com", "linkedin.com", "youtube.com", "scholar.google")
+
+
+def linked_pages(text, name, limit=2):
+    """Personal / lab pages the faculty page links to (by link text or by the professor's surname in the URL)."""
+    last = (name.split() or [""])[-1].lower()
+    out = []
+    for m in LINK.finditer(text):
+        label, url = m.group(1), m.group(2)
+        host = urllib.parse.urlparse(url).netloc.lower()
+        if any(s in host for s in SKIP_HOSTS) or url.lower().endswith((".jpg", ".png", ".pdf")):
+            continue
+        if HOME_WORDS.search(label) or (last and len(last) > 3 and last in host):
+            if url not in out:
+                out.append(url)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def from_page(url, name=""):
+    """Faculty page first; if it lists nothing, the personal / lab pages it links to.
+    Returns (publications, grants, ok, pages_used)."""
     page = fx.fetch_page(url)
     if not page.get("ok"):
-        return [], [], False
-    return publications(page["text"]), grants(page["text"]), True
+        return [], [], False, []
+    pubs, grs, used = publications(page["text"]), grants(page["text"]), [url]
+    if not pubs:
+        for link in linked_pages(page["text"], name):
+            sub = fx.fetch_page(link)
+            if not sub.get("ok"):
+                continue
+            more = publications(sub["text"])
+            if more:
+                pubs, used = more, used + [link]
+                grs = grs + [g for g in grants(sub["text"]) if g["title"] not in [x["title"] for x in grs]]
+                break
+    return pubs, grs, True, used
 
 
 def item_id(prefix, prof_id, title):

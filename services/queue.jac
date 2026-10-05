@@ -160,6 +160,20 @@ def:priv list_staff_review(limit: int = 200) -> list[ReviewItem] {
     return out;
 }
 
+def:priv requeue_staff_review() -> StepResult {
+    require_staff();
+    n = int(pipe.queue_review_retries(""));
+    started = "";
+    if not pipe.running() {
+        # queued jobs only run while the worker is on
+        pipe.start();
+        pipe.log("Auto-processing started (staff review re-queue).");
+        started = " Auto-processing was paused and has been started.";
+    }
+    s = pipe.review_queue_state() as dict;
+    return StepResult(message=f"Re-queued {n} items. {s['queued']} waiting, {s['running']} running; each continues from its next unfinished step." + started);
+}
+
 def:priv resolve_staff_review(item_id: str) -> StepResult {
     require_staff();
     st.resolve_staff_review(item_id);
@@ -284,7 +298,11 @@ def:pub internal_action(worker_token: str = "", action: str = "", arg: str = "")
         return StepResult(message=f"Loaded {r[1]} research universities from IPEDS {r[0]} ({r[2]} new).");
     }
     if action == "retry_unreadable" { return StepResult(message=f"Re-queued {pipe.requeue()} universities."); }
-    if action == "retry_staff_review" { return StepResult(message=f"Queued {pipe.queue_review_retries(arg)} review retries."); }
+    if action == "retry_staff_review" {
+        n = pipe.queue_review_retries(arg);
+        if not pipe.running() { pipe.start(); pipe.log("Auto-processing started (staff review re-queue)."); }
+        return StepResult(message=f"Queued {n} review retries; worker running.");
+    }
     if action == "queue_grant_check" { return StepResult(message="Queued " + str(pipe.queue_test_job("GRANT_CHECK", arg))); }
     if action == "queue_llm_identity" { return StepResult(message="Queued " + str(pipe.queue_test_job("LLM_IDENTITY", arg))); }
     if action == "recrawl_all" { return StepResult(message=f"Re-crawling {pipe.recrawl_all()} universities."); }

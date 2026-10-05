@@ -11,6 +11,7 @@ in a loop. Every write goes straight to MongoDB, so nothing is lost on a sandbox
 import os
 import re
 import time
+import urllib.parse
 import threading
 
 from services import store as st
@@ -471,20 +472,79 @@ def resolve_unmatched(p, inst, inst_oid):
     return out
 
 
+GRANT_YEARS = 10
+
+
+def _store_grant(g, source_url=""):
+    """Upsert one grant (from NSF / NIH / faculty page) and return its link for the professor."""
+    gid = g["key"]
+    start = g.get("start_date") or (f"{g['year']}-01-01" if g.get("year") else "")
+    st.upsert_grant({"openalex_award_id": gid, "title": g.get("title", ""), "funder_name": g.get("funder_name", ""),
+                     "funder_award_id": g.get("funder_award_id", ""), "amount": float(g.get("amount") or 0),
+                     "currency": g.get("currency", ""), "start_date": start, "end_date": g.get("end_date", ""),
+                     "landing_page_url": g.get("url") or source_url, "evidence": g.get("evidence", ""),
+                     "source": g.get("source", ""), "year_found": g.get("year", 0)})
+    return {"id": gid, "role": g.get("role", "RECIPIENT")}
+
+
+def collect_grants(p, inst):
+    """Every grant source, merged, last GRANT_YEARS years:
+      1. OpenAlex awards on the professor's works (matched professors only)
+      2. NSF + NIH award search by name, filtered to this university
+      3. fellowships/grants named on the official faculty page
+    Returns (links, counts per source). Duplicates (same funder award id) are kept once."""
+    from services import federal_grants, facultypage
+    links, seen, counts = [], set(), {"openalex": 0, "nsf_nih": 0, "faculty_page": 0}
+    since = str(time.gmtime().tm_year - GRANT_YEARS)
+
+    def key(award_id, title):
+        # same award from two sources: digits of the award number, else the normalized title
+        digits = re.sub(r"\D", "", str(award_id or ""))
+        return digits[-7:] if len(digits) >= 6 else re.sub(r"[^a-z0-9]", "", (title or "").lower())[:60]
+
+    if p.get("openalex_author_id"):
+        resolve_institution(inst)
+        _ids, _s, _f, awards = ingest_works(p)
+        for link in discover_grants(dict(p), inst, awards):
+            g = st.db().grants.find_one({"_id": link["id"]}) or {}
+            if (g.get("start_date") or "9999")[:4] >= since:
+                links.append(link)
+                seen.add(key(g.get("funder_award_id"), g.get("title")))
+                seen.add(key("", g.get("title")))
+                counts["openalex"] += 1
+    for g in federal_grants.search(p["name"], inst.get("name", ""), names_match, GRANT_YEARS):
+        k1, k2 = key(g["funder_award_id"], g["title"]), key("", g["title"])
+        if k1 in seen or k2 in seen:
+            continue
+        seen.update([k1, k2])
+        links.append(_store_grant(g))
+        counts["nsf_nih"] += 1
+    if p.get("faculty_url"):
+        page = fx.fetch_page(p["faculty_url"])
+        if page.get("ok"):
+            for g in facultypage.grants(page["text"]):
+                if g.get("year") and str(g["year"]) < since:
+                    continue
+                gid = facultypage.item_id("FG", p["id"], g["title"])
+                if gid in [l["id"] for l in links]:
+                    continue
+                links.append(_store_grant(dict(g, key=gid, role="RECIPIENT", source="FACULTY_PAGE"), p["faculty_url"]))
+                counts["faculty_page"] += 1
+    return links, counts
+
+
 def run_grant_job(professor_id):
     """One grant check for one MATCHED professor: their recent works' OpenAlex awards, kept only
     where the professor is a named person on the award or their institution is the awardee."""
     p = st.get_professor(professor_id)
     inst = st.get_institution(p["institution_id"]) if p else None
-    if not p or not inst or not p.get("openalex_author_id"):
-        return {"ok": False, "message": "Professor not found or not matched to OpenAlex."}
-    resolve_institution(inst)
-    _ids, _subs, _flds, awards = ingest_works(p)
-    grants = discover_grants(dict(p), inst, awards)
+    if not p or not inst:
+        return {"ok": False, "message": "Professor not found."}
+    grants, counts = collect_grants(p, inst)
     st.update_professor(p["id"], {"grants": grants, "grant_count": len(grants), "last_grant_update": st.now_iso()})
     st.recount(inst["id"])
     st.invalidate_search()
-    return {"ok": True, "professor": p["name"], "university": inst["name"], "awards_on_papers": len(awards),
+    return {"ok": True, "professor": p["name"], "university": inst["name"], "by_source": counts,
             "grants_linked": len(grants), "grants": [st._clean(g) for g in st.db().grants.find({"_id": {"$in": [g["id"] for g in grants]}})]}
 
 
@@ -522,9 +582,10 @@ def use_faculty_page(p, inst):
     url = p.get("faculty_url") or ""
     if not url:
         return {}
-    pubs, grs, ok = fpg.from_page(url)
+    pubs, grs, ok, used = fpg.from_page(url, p.get("name", ""))
     if not ok or not (pubs or grs):
         return {}
+    url = used[-1] if used else url
     ids, grant_links = [], []
     for x in pubs:
         pid = fpg.item_id("FP", p["id"], x["title"])
@@ -535,16 +596,117 @@ def use_faculty_page(p, inst):
         ids.append(pid)
     for g in grs:
         gid = fpg.item_id("FG", p["id"], g["title"])
-        st.upsert_grant({"openalex_award_id": gid, "title": g["title"], "funder_name": g["funder_name"], "funder_award_id": "",
-                         # no start date: a year in the same sentence usually belongs to something else
-                         "amount": 0.0, "currency": "", "start_date": "", "end_date": "",
-                         "landing_page_url": url, "evidence": g["evidence"], "source": "FACULTY_PAGE"})
-        grant_links.append({"id": gid, "role": "RECIPIENT"})
+        grant_links.append(_store_grant(dict(g, key=gid, role="RECIPIENT", source="FACULTY_PAGE"), url))
+    # federal awards by name at this university (NSF, NIH), same as matched professors
+    from services import federal_grants
+    for g in federal_grants.search(p["name"], inst.get("name", ""), names_match, GRANT_YEARS):
+        grant_links.append(_store_grant(g))
     return {"paper_ids": ids, "grants": grant_links, "grant_count": len(grant_links), "match_status": "FACULTY_PAGE",
             "match_method": "FACULTY_PAGE",
             "match_note": f"No OpenAlex, Google Scholar or ORCID identity. {len(ids)} publications and {len(grant_links)} grants/fellowships "
-                          f"taken from the official faculty page ({url}).",
+                          f"taken from {'the official faculty page' if len(used) == 1 else 'the page linked from the faculty page'} ({url}).",
             "last_openalex_update": st.now_iso(), "last_grant_update": st.now_iso(), "identity_checked": st.now_iso()}
+
+
+def _identity_from_search(p, inst):
+    """Web search (DDGS) for the professor's own pages beyond the faculty page (personal site,
+    lab site), then read publications from the first page that lists them."""
+    from services import websearch, facultypage as fpg, discovery
+    q = f'"{p["name"]}" {re.split(r"[-,]", inst.get("name", ""))[0]} {p.get("department", "")} publications'
+    try:
+        rows = websearch.search(q, 8)
+    except websearch.SearchUnavailable:
+        return None                                     # cooling down: try later
+    last = st.normalize_name(p["name"]).split()[-1]
+    for r in rows:
+        url, host = r["url"], urllib.parse.urlparse(r["url"]).netloc.lower()
+        if any(b in host for b in fpg.SKIP_HOSTS) or url == p.get("faculty_url") or last not in st.normalize_name(r.get("title", "") + " " + url):
+            continue
+        page = fx.fetch_page(url)
+        if not page.get("ok") or last not in st.normalize_name(page["text"][:3000]):
+            continue                                    # the page must be about this person
+        pubs = fpg.publications(page["text"])
+        if pubs:
+            return {"url": url, "pubs": pubs, "grants": fpg.grants(page["text"])}
+    return {}
+
+
+def _save_page_works(p, inst, url, pubs, grs, how):
+    from services import facultypage as fpg
+    ids = []
+    for x in pubs:
+        pid = fpg.item_id("FP", p["id"], x["title"])
+        st.upsert_paper({"openalex_work_id": pid, "doi": "", "title": x["title"], "publication_year": x["year"],
+                         "publication_date": f"{x['year']}-01-01" if x["year"] else "", "source_name": x["venue_text"][:200],
+                         "paper_url": x["url"] or url, "citation_count": 0, "subfield": "", "field": "",
+                         "source": "FACULTY_PAGE", "faculty_page_url": url})
+        ids.append(pid)
+    links = [_store_grant(dict(g, key=fpg.item_id("FG", p["id"], g["title"]), role="RECIPIENT", source="FACULTY_PAGE"), url) for g in grs]
+    st.update_professor(p["id"], {"paper_ids": ids, "grants": links, "grant_count": len(links), "match_status": "FACULTY_PAGE",
+                                  "match_method": "FACULTY_PAGE", "identity_checked": st.now_iso(), "pipeline_done": True,
+                                  "match_note": f"No OpenAlex, Google Scholar or ORCID identity. {len(ids)} publications and "
+                                                f"{len(links)} grants/fellowships taken from {how} ({url}).",
+                                  "last_openalex_update": st.now_iso(), "last_grant_update": st.now_iso()})
+
+
+def _identity_next_steps(item, p, inst):
+    """Unresolved OpenAlex identity: run only the steps not yet done for this item, in order
+       llm_pick  - local model chooses among real OpenAlex candidates (name, department, university)
+       pages     - publications on the faculty page, or a personal / lab page it links to
+       search    - DDGS web search for the professor's own site with a publication list
+    Steps already finished are recorded on the item ("steps_done") and never repeated."""
+    d = st.db()
+    done = list(item.get("steps_done") or [])
+    note = ""
+    if "llm_pick" not in done:
+        fields, reason = _llm_publications(p, inst)
+        if reason == "LLM_FAILED":
+            return _keep(item, done, "The local model could not run: " + str((fields.get("llm_papers_ai") or {}).get("last_error", ""))[:200])
+        done.append("llm_pick")
+        if fields.get("match_status") == "MATCHED":
+            st.update_professor(p["id"], dict(fields, pipeline_done=False, identity_checked=st.now_iso()))
+            st.update_institution(inst["id"], {"pipeline_state": "PROCESSING"})   # papers + subfields + grants next
+            d.staff_review.delete_one({"_id": item["_id"]})
+            return "FIXED_OPENALEX"
+        note = fields.get("match_note", "")
+    if "pages" not in done:
+        fp = use_faculty_page(p, inst)
+        done.append("pages")
+        if fp:
+            st.update_professor(p["id"], dict(fp, pipeline_done=True))
+            d.staff_review.delete_one({"_id": item["_id"]})
+            return "FIXED_FACULTY_PAGE"
+    if "search" not in done:
+        found = _identity_from_search(p, inst)
+        if found is None:
+            return _keep(item, done, "Web search is cooling down; the search step runs on the next re-queue.")
+        done.append("search")
+        if found:
+            _save_page_works(p, inst, found["url"], found["pubs"], found["grants"], "the professor's own website found by web search")
+            d.staff_review.delete_one({"_id": item["_id"]})
+            return "FIXED_WEB_PAGE"
+    # every step tried: a real, final "nothing found"
+    st.update_professor(p["id"], {"match_status": "NO_RESULT_FOUND", "identity_checked": st.now_iso()})
+    d.staff_review.update_one({"_id": item["_id"]}, {"$set": {
+        "steps_done": done, "reason": "NO_RESULT_FOUND", "attempted_at": st.now_iso(),
+        "last_error": "Checked: OpenAlex candidates with the AI, the faculty page and pages it links to, and a web search. "
+                      "No identity or publication list found." + (" " + note if note else "")}}, upsert=True)
+    return "NO_RESULT_FOUND"
+
+
+def _grant_next_steps(item, p, inst):
+    """Grant search stuck: faculty page first, then NSF / NIH by name, then OpenAlex awards."""
+    links, counts = collect_grants(p, inst)
+    st.update_professor(p["id"], {"grants": links, "grant_count": len(links), "last_grant_update": st.now_iso()})
+    st.db().staff_review.delete_one({"_id": item["_id"]})
+    return f"FIXED_GRANTS_{len(links)}"
+
+
+def _keep(item, done, why):
+    """Nothing decided now: keep the item with the steps already finished, retried later."""
+    st.db().staff_review.update_one({"_id": item["_id"]}, {"$set": {"steps_done": done, "last_error": why,
+                                                                     "attempted_at": st.now_iso(), "resolved": False}}, upsert=True)
+    return "RETRY_LATER"
 
 
 def retry_review_item(item_id):
@@ -567,9 +729,15 @@ def retry_review_item(item_id):
             st.update_professor(p["id"], fields)
             res = "FIXED"
         elif not fields and not d.staff_review.find_one({"task_type": t, "professor_id": pid, "resolved": False}):
-            # page unreachable or reload hiccup: nothing was decided, keep the item and try later
-            d.staff_review.replace_one({"_id": item_id}, item, upsert=True)
-            res = "RETRY_LATER"
+            # faculty page did not load (bot check / timeout): try again later, at most 3 times,
+            # then say so plainly instead of looping
+            tries = int(item.get("page_tries") or 0) + 1
+            reason = "FACULTY_PAGE_UNREACHABLE" if tries >= 3 else item.get("reason")
+            d.staff_review.replace_one({"_id": item_id}, dict(item, page_tries=tries, reason=reason, attempted_at=st.now_iso(),
+                                       last_error=("The faculty page could not be loaded after 3 tries (the site may block "
+                                                   "automated requests). Check the link or add the details by hand.")
+                                       if tries >= 3 else item.get("last_error")), upsert=True)
+            res = "PAGE_UNREACHABLE" if tries >= 3 else "RETRY_LATER"
         # else enrich_profile re-flagged it with the current error -> STILL_FAILING
     elif t == "HIRING_EXTRACTION" and p:
         d.staff_review.delete_one({"_id": item_id})
@@ -582,29 +750,9 @@ def retry_review_item(item_id):
                                           "hiring_status": h["status"], "last_hiring_update": h["checked_at"]})
             res = "FIXED"
     elif t == "OPENALEX_IDENTITY" and p:
-        d.staff_review.delete_one({"_id": item_id})
-        fields, reason = _llm_publications(p, inst)
-        if fields.get("match_status") != "MATCHED":
-            fp = use_faculty_page(p, inst)
-            if fp:
-                st.update_professor(p["id"], dict(fields, **fp))
-                st.invalidate_search()
-                return {"ok": True, "item": item_id, "task_type": t, "professor": p["name"], "result": "FACULTY_PAGE",
-                        "publications": len(fp["paper_ids"]), "grants": fp["grant_count"]}
-        if fields.get("match_status") == "MATCHED":
-            st.update_professor(p["id"], dict(fields, pipeline_done=False, identity_checked=st.now_iso()))
-            st.update_institution(inst["id"], {"pipeline_state": "PROCESSING"})
-            res = "FIXED"
-        else:
-            if fields:
-                st.update_professor(p["id"], fields)
-            flag_staff_review(t, reason or "NO_RESULT_FOUND", inst, p, source_url=p.get("faculty_url", ""),
-                              extra={"last_error": IDENTITY_REASONS.get(reason, reason) + (
-                                  " " + fields.get("match_note", "") if fields.get("match_note") else ""),
-                                  "department": p.get("department", "")})
-            if reason == "NO_RESULT_FOUND":
-                st.update_professor(p["id"], {"match_status": "NO_RESULT_FOUND", "identity_checked": st.now_iso()})
-            res = "NO_RESULT_FOUND" if reason == "NO_RESULT_FOUND" else "STILL_FAILING"
+        res = _identity_next_steps(item, p, inst)
+    elif t == "GRANT_SEARCH" and p:
+        res = _grant_next_steps(item, p, inst)
     else:
         return {"ok": False, "message": f"No automatic retry for task type {t}."}
     st.invalidate_search()
@@ -612,15 +760,34 @@ def retry_review_item(item_id):
 
 
 def queue_review_retries(task_type=""):
-    """Queue a retry job for every open review item (optionally one task type)."""
+    """Re-queue: one job per open review item, unless that item already has a job waiting or running
+    (so pressing the button twice never doubles the work). Items whose every step is finished
+    (NO_RESULT_FOUND with all steps done) are left alone - re-running them would repeat the same work."""
+    d = st.db()
+    # jobs left RUNNING by a restart are stale: put them back in the queue
+    d.jobs.update_many({"kind": "REVIEW_RETRY", "status": "RUNNING"}, {"$set": {"status": "QUEUED", "queued_at": st.now_iso()}})
     q = {"resolved": False}
     if task_type:
         q["task_type"] = task_type
     n = 0
-    for item in st.db().staff_review.find(q, {"_id": 1}):
+    for item in d.staff_review.find(q, {"_id": 1, "reason": 1, "steps_done": 1}):
+        if item.get("reason") == "NO_RESULT_FOUND" and {"llm_pick", "pages", "search"} <= set(item.get("steps_done") or []):
+            continue
+        if item.get("reason") == "FACULTY_PAGE_UNREACHABLE":
+            continue                                    # needs a person: retrying the same URL repeats the same failure
+        jid = f"REVIEW_RETRY:{item['_id']}"
+        job = d.jobs.find_one({"_id": jid}, {"status": 1})
+        if job and job.get("status") in ("QUEUED", "RUNNING"):
+            continue
         queue_test_job("REVIEW_RETRY", item["_id"])
         n += 1
     return n
+
+
+def review_queue_state():
+    d = st.db()
+    return {"queued": d.jobs.count_documents({"kind": "REVIEW_RETRY", "status": "QUEUED"}),
+            "running": d.jobs.count_documents({"kind": "REVIEW_RETRY", "status": "RUNNING"})}
 
 
 def queue_test_job(kind, professor_id):
@@ -942,8 +1109,15 @@ def process_professor(p, inst):
         fields.update(paper_ids=ids, subfields=subs, fields=flds, last_openalex_update=st.now_iso())
         n_papers = len(ids)
         if GRANTS():
-            grants = discover_grants(dict(q, orcid=fields.get("orcid") or p.get("orcid")), inst, awards)
-            fields.update(grants=grants, grant_count=len(grants), last_grant_update=st.now_iso())
+            try:
+                grants, _c = collect_grants(dict(q, orcid=fields.get("orcid") or p.get("orcid")), inst)
+                fields.update(grants=grants, grant_count=len(grants), last_grant_update=st.now_iso())
+            except fx.RateLimited:
+                raise
+            except Exception as e:
+                # keep the professor's previous grants; staff can re-queue the grant search
+                flag_staff_review("GRANT_SEARCH", "GRANT_SEARCH_FAILED", inst, p, source_url=p.get("faculty_url", ""),
+                                  extra={"last_error": f"{type(e).__name__}: {str(e)[:200]}", "department": p.get("department", "")})
     h = check_hiring(dict(p, **fields), inst)
     if h is not None:
         if h["status"] == "STAFF_REVIEW":
