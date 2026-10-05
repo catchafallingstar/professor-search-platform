@@ -14,6 +14,11 @@ default_model = "${LLM_MODEL:-gpt-4o-mini}"
 api_key = "${LLM_API_KEY:-}"
 base_url = "${OLLAMA_API_BASE:-}"
 
+[byllm.call_params]
+# Without this, OpenRouter reserves the model's full 131072-token output and rejects the
+# request ("requires more credits"). Every answer here is a short JSON object.
+max_tokens = 4000
+
 
 [jac-shadcn]
 style = "lyra"

@@ -917,8 +917,14 @@ def queue_test_job(kind, professor_id, priority=0):
 
 def run_next_job():
     """Runs one queued one-off job (grant check / LLM identity). Returns a log message or ""."""
-    # staff re-queues (priority 1) run before anything else, then oldest first
-    job = st.db().jobs.find_one({"status": "QUEUED"}, sort=[("priority", -1), ("queued_at", 1)])
+    # staff re-queues (priority 1) run before anything else, then oldest first. Hiring checks need
+    # web search: while it is paused (daily cap / cooldown) they wait instead of re-reading the same
+    # pages with the AI and failing at the search step every few seconds.
+    from services import websearch as _ws
+    q = {"status": "QUEUED"}
+    if not _ws.status()["available"]:
+        q["kind"] = {"$ne": "HIRING_CHECK"}
+    job = st.db().jobs.find_one(q, sort=[("priority", -1), ("queued_at", 1)])
     if job is None:
         return ""
     st.db().jobs.update_one({"_id": job["_id"]}, {"$set": {"status": "RUNNING", "started_at": st.now_iso()}})
@@ -940,6 +946,13 @@ def run_next_job():
     except fx.RateLimited:
         st.db().jobs.update_one({"_id": job["_id"]}, {"$set": {"status": "QUEUED"}})
         raise
+    except ImportError as e:
+        # a package went missing (sandbox reset before `jac install` ran): an environment problem,
+        # not a result - keep the job queued so it runs once the package is back
+        log(f"Job {job['_id']} postponed: {e}. Run `jac install` to restore dependencies.")
+        st.db().jobs.update_one({"_id": job["_id"]}, {"$set": {"status": "QUEUED", "queued_at": st.now_iso()}})
+        time.sleep(30)
+        return f"Job {job['_id']}: QUEUED - missing package ({e.name})"
     except Exception as e:
         res, status = {"ok": False, "message": f"{type(e).__name__}: {str(e)[:300]}"}, "FAILED"
     st.db().jobs.update_one({"_id": job["_id"]}, {"$set": {"status": status, "result": res, "finished_at": st.now_iso()}})

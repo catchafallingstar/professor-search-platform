@@ -108,7 +108,9 @@ def _load_rest() -> None {
         with open(REST_FILE) as f {
             data: dict = json.load(f);
             for k in data.keys() {
-                if k not in _REST or float(data[k][0]) > float(_REST[k][0]) { _REST[k] = data[k]; }
+                new_v: list = data[k];
+                old_v: list = _REST.get(k, [0, ""]);
+                if k not in _REST or float(str(new_v[0])) > float(str(old_v[0])) { _REST[k] = new_v; }
             }
         }
     } except Exception { }
@@ -157,6 +159,18 @@ def resting() -> list[dict] {
         }
     }
     return out;
+}
+
+glob _CUR_NAME: str = "";
+
+def ai_max_tokens() -> int {
+    # f"by cur()" re-sets the model's call params on every call, so the Model(call_params=...)
+    # limit is lost and OpenRouter reserves the model's full output (131072 tokens) and rejects
+    # the request for credits. Pass the limit on every call instead.
+    if _CUR_NAME.startswith("ollama") {
+        return int(os.environ.get("OLLAMA_MAX_TOKENS", "700") or 700);
+    }
+    return 4000;
 }
 
 def _model(name: str) -> Model {
@@ -233,6 +247,7 @@ def run_task(fn: any, args: list, check: any, escalate_uncertain: bool = False) 
                 raw: any = None;
                 with _LOCK {             # f"cur" is shared: one model call at a time
                     cur = _model(name);
+                    _CUR_NAME = name;
                     raw = fn(*args);
                 }
                 verdict = check(raw);
@@ -274,8 +289,10 @@ def run_task(fn: any, args: list, check: any, escalate_uncertain: bool = False) 
             }
         }
     }
-    if models and skipped >= len(models) {
-        # every model is unavailable right now: wait and retry, never a staff-review item
+    if models and skipped > 0 {
+        # some model (usually the local Ollama behind a tunnel, or a cloud model out of credits)
+        # was unavailable, so the task never got a fair try on every model: wait and retry.
+        # Staff review is only for tasks every available model actually tried and failed.
         out.status = "RETRY_LATER";
         out.error_kind = "ALL_MODELS_RESTING";
         out.attempt_number = attempt;
@@ -296,7 +313,7 @@ obj DirectoryGuess {
 sem DirectoryGuess.department = "Academic unit the page belongs to, e.g. 'Computer Science'.";
 sem DirectoryGuess.url = "Absolute URL on the university's own domain.";
 
-def _guess_dirs(university: str, domain: str, fields: str) -> list[DirectoryGuess] by cur();
+def _guess_dirs(university: str, domain: str, fields: str) -> list[DirectoryGuess] by cur(max_tokens=ai_max_tokens());
 sem _guess_dirs = "Propose up to 8 URLs of official FACULTY DIRECTORY pages (pages listing a department's professors) at this university. Cover every academic area: engineering, sciences, humanities, arts and social sciences. Only URLs on the given domain or its subdomains. Return an empty list if you do not know.";
 sem _guess_dirs.university = "University name.";
 sem _guess_dirs.domain = "The university's official web domain, e.g. umich.edu.";
@@ -319,7 +336,7 @@ sem PageKind.FACULTY_DIRECTORY = "The page mainly lists a unit's faculty/profess
 sem PageKind.MIXED_DIRECTORY = "The page lists faculty together with staff or students.";
 sem PageKind.NOT_FACULTY_DIRECTORY = "News, events, admissions, a single profile, or anything else.";
 
-def _classify_page(page_text: str, url: str) -> PageKind by cur();
+def _classify_page(page_text: str, url: str) -> PageKind by cur(max_tokens=ai_max_tokens());
 sem _classify_page = "Classify this already-fetched university web page.";
 sem _classify_page.page_text = "Text of the page (links shown as [text](url)).";
 
@@ -348,7 +365,7 @@ obj FacultyList {
 sem FacultyList.uncertain = "True if you cannot tell which people on the page are current faculty.";
 sem FacultyList.faculty = "Every current professor-rank faculty member on the page. Exclude staff, students, emeriti, adjuncts, lecturers, visitors.";
 
-def _extract_faculty(page_text: str, department: str) -> FacultyList by cur();
+def _extract_faculty(page_text: str, department: str) -> FacultyList by cur(max_tokens=ai_max_tokens());
 sem _extract_faculty = "List the current professor-rank faculty that appear in this already-fetched faculty directory page. Only people present in the text.";
 sem _extract_faculty.department = "Department hint for the page.";
 
@@ -382,7 +399,7 @@ sem ProfileInfo.personal_url = "URL of a personal homepage if linked, else empty
 sem ProfileInfo.orcid = "ORCID iD (0000-0000-0000-0000) if shown, else empty.";
 sem ProfileInfo.publications = "Up to 3 of the most recent publications listed on the page; empty if none. Never invent.";
 
-def _profile(page_text: str, professor_name: str) -> ProfileInfo by cur();
+def _profile(page_text: str, professor_name: str) -> ProfileInfo by cur(max_tokens=ai_max_tokens());
 sem _profile = "Extract details from this already-fetched faculty profile page. Use only what appears in the text.";
 
 def _check_profile(raw: any) -> list {
@@ -411,7 +428,7 @@ obj HiringFinding {
 sem HiringFinding.quote = "The single sentence copied EXACTLY from the page text that supports the status. Empty for NO_SIGNAL.";
 sem HiringFinding.confidence = "Your confidence from 0 to 1.";
 
-def _hiring(page_text: str, professor_name: str) -> HiringFinding by cur();
+def _hiring(page_text: str, professor_name: str) -> HiringFinding by cur(max_tokens=ai_max_tokens());
 sem _hiring = "Decide whether this already-fetched page contains a hiring or recruitment statement by this professor or their lab, and copy the exact supporting sentence. Do not paraphrase. Do not return a URL.";
 
 def _check_hiring(raw: any) -> list {
@@ -435,7 +452,7 @@ obj HiringVerdict {
 sem HiringVerdict.is_open_recruitment = "True ONLY if the sentence invites people to apply for, contact about, or join an opening that exists now or in the future (PhD students, postdocs, research assistants, staff) in this professor's lab or group, or by this professor. Also True when it invites people interested in working with or joining the lab to contact the professor (indirect recruitment). False for announcements that someone joined, was welcomed, hired, appointed, promoted or received a fellowship or award; for descriptions of current or past members; for the professor's own appointment; and for anything in the past tense.";
 sem HiringVerdict.reason = "One short sentence explaining the decision.";
 
-def _verify_hiring(sentence: str, professor_name: str) -> HiringVerdict by cur();
+def _verify_hiring(sentence: str, professor_name: str) -> HiringVerdict by cur(max_tokens=ai_max_tokens());
 sem _verify_hiring = "Strictly judge whether this one sentence, copied from a web page, is a real recruitment signal for the named professor's lab. A news item welcoming or announcing a new member (even a new postdoc or fellow) is NOT recruitment. When in doubt, answer false.";
 
 def _check_verdict(raw: any) -> list {
@@ -467,7 +484,7 @@ obj PublicationAnswer {
 sem PublicationAnswer.papers = "At most 5 works you are confident belong to this exact person. An EMPTY list is a correct, acceptable answer.";
 sem PublicationAnswer.reasoning = "One short sentence on how you know (or why you do not).";
 
-def _publications(professor_name: str, university: str, department: str, title: str, page_text: str) -> PublicationAnswer by cur();
+def _publications(professor_name: str, university: str, department: str, title: str, page_text: str) -> PublicationAnswer by cur(max_tokens=ai_max_tokens());
 sem _publications = "/no_think ACCURACY FIRST. List publications of this specific professor ONLY if you are confident they were written by this exact person: same name, at this university, working in this department's field. Many people share a name - a work by a same-named person at another institution or in another field is WRONG and must be left out. It is completely fine, and often correct, that the professor has no publications you know of (many humanities and arts faculty publish books, exhibitions or performances, or nothing indexed); in that case return an empty list. Never guess, never invent titles or DOIs. Use the faculty page text if given.";
 sem _publications.professor_name = "Full name as listed on the university's faculty directory.";
 sem _publications.university = "The university the professor works at now.";
