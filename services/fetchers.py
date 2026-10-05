@@ -443,12 +443,17 @@ def _blocked(text):
     return ("just a moment" in t and "cloudflare" in t) or "enable javascript and cookies" in t or "attention required" in t
 
 
-def _via_reader(url):
+def _via_reader(url, patient=False):
     """Fallback for sites that block automated requests (e.g. most umich.edu pages return a
-    Cloudflare 403). Returns Markdown with [text](url) links, the same shape html_to_text gives."""
+    Cloudflare 403). Returns Markdown with [text](url) links, the same shape html_to_text gives.
+    patient=True asks the reader to wait for the page to render (up to 30 s), which gets past
+    Cloudflare's "Just a moment..." check that the quick read sometimes returns."""
     # Plain request (like curl): the reader rejects some custom header combinations with 403.
-    req = urllib.request.Request(READER + url, headers={"User-Agent": "curl/8.5.0", "Accept": "*/*"})
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    headers = {"User-Agent": "curl/8.5.0", "Accept": "*/*"}
+    if patient:
+        headers.update({"X-Timeout": "30", "X-Wait-For-Selector": "main"})
+    req = urllib.request.Request(READER + url, headers=headers)
+    with urllib.request.urlopen(req, timeout=90 if patient else 60) as resp:
         md = resp.read(3_000_000).decode("utf-8", errors="ignore")
     title = ""
     m = re.match(r"\s*Title:\s*(.+)", md)
@@ -502,6 +507,14 @@ def fetch_page(url):
                     continue
                 print(f"[fetch] reader for {url} failed: {e}")
                 break
+    if not out["ok"]:
+        # last try: let the reader wait for the bot check to clear
+        try:
+            title, text = _via_reader(url, patient=True)
+            if len(text) > 200 and not _blocked(text) and "Just a moment" not in title:
+                out.update(url=url, title=title, text=text, ok=True, via="reader_patient")
+        except Exception as e:
+            print(f"[fetch] patient reader for {url} failed: {e}")
     return out
 
 
