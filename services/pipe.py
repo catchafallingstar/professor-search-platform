@@ -1102,6 +1102,7 @@ def flag_staff_review(task_type, reason, inst=None, prof=None, source_url="", ou
         "models_attempted": list(outcome.models_attempted) if outcome else [],
         "last_error": (outcome.last_error if outcome else "") or (extra or {}).get("last_error", ""),
         "error_kind": outcome.error_kind if outcome else "", "attempted_at": st.now_iso(), "resolved": False,
+        "local_model_error": getattr(outcome, "local_model_error", "") if outcome else "",
     }
     doc.update(extra or {})
     st.db().staff_review.replace_one({"_id": key}, doc, upsert=True)

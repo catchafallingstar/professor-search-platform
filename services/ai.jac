@@ -61,9 +61,11 @@ def configured() -> bool {
     return len(chain()) > 0;
 }
 
+import services.ai_lock as ai_lock;
+
 glob _MODELS: dict = {},
      cur: any = None,
-     _LOCK: threading.Lock = threading.Lock();
+     _LOCK: threading.Lock = ai_lock.LOCK;
 
 def ollama_base() -> str {
     # Quick tunnels get a new URL on every restart: read .env each time so a pasted new
@@ -123,9 +125,22 @@ def _save_rest() -> None {
     } except Exception { }
 }
 
-def _rest_seconds(err: str, kind: str) -> list {
+def _rest_seconds(err: str, kind: str, name: str = "") -> list {
     # [seconds, reason] or [] when the failure is not about availability
     t = err.lower();
+    if name.startswith("ollama") {
+        # Ollama has no billing or per-day cap of its own: those OpenRouter-style reasons below
+        # (checked by matching stray digits like "402"/"429" in the error text) do not apply and
+        # have mis-fired before on an unrelated tunnel hiccup, resting the local model for up to an
+        # hour. A local model can only ever be "offline" (tunnel down / connection refused).
+        if "cloudflare tunnel error" in t or "530" in t or "connection refused" in t or "timed out" in t
+            or "failed to resolve" in t or "name or service not known" in t or "502" in t or "503" in t
+            or "429" in t or "too many requests" in t {
+            # short: both retries on this model already failed, but a quick tunnel blip clears fast
+            return [20, "local model offline"];
+        }
+        return [];
+    }
     if kind == "RATE_LIMITED" or "free-models-per-day" in t {
         # OpenRouter daily cap: rest until its X-RateLimit-Reset (ms epoch) when present
         idx = err.find("X-RateLimit-Reset");
@@ -211,7 +226,8 @@ obj AiOutcome {
         fallback_count: int = 0,
         models_attempted: list[str] = [],
         last_error: str = "",
-        error_kind: str = "";        # TRANSPORT_ERROR | TIMEOUT | RATE_LIMITED | MODEL_ERROR | INVALID_OUTPUT | SCHEMA_ERROR
+        error_kind: str = "",        # TRANSPORT_ERROR | TIMEOUT | RATE_LIMITED | MODEL_ERROR | INVALID_OUTPUT | SCHEMA_ERROR
+        local_model_error: str = "";  # the local model's own error, kept even after a cloud fallback overwrites last_error
 }
 
 def _kind(e: any) -> str {
@@ -238,6 +254,9 @@ def run_task(fn: any, args: list, check: any, escalate_uncertain: bool = False) 
             # resting (daily limit, no credits, local model offline): go straight to the next model
             skipped += 1;
             out.last_error = name + " resting: " + str(rest[1]);
+            if name.startswith("ollama") {
+                out.local_model_error = f"skipped - resting {int(float(rest[0]) - time.time())}s ({rest[1]})";
+            }
             continue;
         }
         out.models_attempted.append(name);
@@ -270,6 +289,9 @@ def run_task(fn: any, args: list, check: any, escalate_uncertain: bool = False) 
             } except Exception as e {
                 out.error_kind = _kind(e);
                 out.last_error = str(e)[:300];
+                if name.startswith("ollama") {
+                    out.local_model_error = (type(e).__name__ + ": " + str(e))[:300];
+                }
                 if isinstance(e, NameError) {
                     # a hot reload of this module left the by-llm call pointing at stale types:
                     # a code problem, not a model failure - stop and let the caller retry later
@@ -277,8 +299,14 @@ def run_task(fn: any, args: list, check: any, escalate_uncertain: bool = False) 
                     out.status = "RETRY_LATER";
                     return out;
                 }
-                rs = _rest_seconds(str(e), out.error_kind);
+                rs = _rest_seconds(str(e), out.error_kind, name);
                 if rs {
+                    if name.startswith("ollama") and retry == 0 {
+                        # a single flaky request through the quick tunnel is common and usually
+                        # clears immediately; use the 2nd retry on the SAME model before writing
+                        # the local model off and falling back to a cloud model for the next 2 min
+                        continue;
+                    }
                     # not a bad answer, the model is unavailable: rest it and switch model now
                     _REST[name] = [time.time() + float(rs[0]), str(rs[1])];
                     _save_rest();

@@ -17,6 +17,8 @@ import os
 import re
 import urllib.request
 
+from services.ai_lock import LOCK  # shared with services/ai.jac: one request to the local model at a time
+
 
 class LocalLLMError(Exception):
     pass
@@ -49,7 +51,7 @@ def chat_json(system, user, schema, max_tokens=None, timeout=400):
                                  headers={"Content-Type": "application/json", "User-Agent": "curl/8.5.0"})
     text, thinking, reason_done = [], [], ""
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with LOCK, urllib.request.urlopen(req, timeout=timeout) as r:
             for line in r:
                 if not line.strip():
                     continue

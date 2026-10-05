@@ -5,6 +5,7 @@ import services.store as st;
 import services.pipe as pipe;
 import services.fetchers as fx;
 import from services.access { require_staff, worker_token, check_worker_token }
+import services.ai as ai;
 
 obj ConfigStatus {
     has openalex_ok: bool = False,
@@ -330,6 +331,9 @@ def:pub internal_action(worker_token: str = "", action: str = "", arg: str = "")
     if action == "queue_grant_check" { return StepResult(message="Queued " + str(pipe.queue_test_job("GRANT_CHECK", arg))); }
     if action == "queue_llm_identity" { return StepResult(message="Queued " + str(pipe.queue_test_job("LLM_IDENTITY", arg))); }
     if action == "recrawl_all" { return StepResult(message=f"Re-crawling {pipe.recrawl_all()} universities."); }
+    if action == "ai_status" {
+        return StepResult(message=f"chain={ai.chain()} resting={ai.resting()}");
+    }
     return StepResult(ok=False, message="Unknown action");
 }
 
