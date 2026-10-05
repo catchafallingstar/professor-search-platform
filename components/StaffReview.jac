@@ -79,9 +79,10 @@ def:pub StaffReview() -> JsxElement {
     busy: bool = len([j for j in jobs if j.status == "QUEUED" or j.status == "RUNNING"]) > 0;
 
     # while jobs are waiting or running, refresh every 10 s so results appear on their own
+    # React requires the cleanup to be a function (never None), so the timer always exists and
+    # only reloads while jobs are waiting or running
     useEffect(lambda {
-        if not busy { return None; }
-        timer = setInterval(lambda { load(); }, 10000);
+        timer = setInterval(lambda { if busy { load(); } }, 10000);
         return lambda { clearInterval(timer); };
     }, [busy]);
 
