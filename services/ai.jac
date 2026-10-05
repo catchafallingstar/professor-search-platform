@@ -36,7 +36,7 @@ def chain() -> list[str] {
     out: list[str] = [];
     single = os.environ.get("LLM_MODEL", "").strip();
     # A local model (Ollama behind a tunnel) goes FIRST: it has no credit or daily limit.
-    if single and single.startswith("ollama") and os.environ.get("OLLAMA_API_BASE", "") {
+    if single and single.startswith("ollama") and ollama_base() {
         out.append(single);
     }
     if os.environ.get("OPENROUTER_API_KEY", "") {
@@ -67,13 +67,21 @@ glob _MODELS: dict = {},
 
 def ollama_base() -> str {
     # Quick tunnels get a new URL on every restart: read .env each time so a pasted new
-    # URL takes effect without restarting the preview.
+    # URL takes effect without restarting the preview. The process env is updated too:
+    # LiteLLM, the project-wide by llm() and llm_local.py all read OLLAMA_API_BASE from it,
+    # and a stale value there sent every call to a dead tunnel (Cloudflare error 1033).
     try {
         with open(".env") as f {
             for line in f.read().splitlines() {
                 if line.strip().startswith("OLLAMA_API_BASE=") {
-                    v = line.split("=", 1)[1].strip().strip('"').strip("'");
-                    if v { return v.rstrip("/"); }
+                    v = line.split("=", 1)[1].strip().strip('"').strip("'").rstrip("/");
+                    if v {
+                        if os.environ.get("OLLAMA_API_BASE", "") != v {
+                            os.environ["OLLAMA_API_BASE"] = v;
+                            _REST.pop(local_name(), None);   # new tunnel: try it right away
+                        }
+                        return v;
+                    }
                 }
             }
         }
@@ -81,9 +89,37 @@ def ollama_base() -> str {
     return os.environ.get("OLLAMA_API_BASE", "").strip().rstrip("/");
 }
 
+def local_name() -> str {
+    single = os.environ.get("LLM_MODEL", "").strip();
+    return single if single.startswith("ollama") else "";
+}
+
 # ---------- resting models (rate limit, out of credits, local model offline) ----------
 
 glob _REST: dict = {};    # model name -> [until_epoch, reason]
+
+# The rest list is mirrored to a small file: hot reloads and worker threads that re-import this
+# module would otherwise forget that OpenRouter hit its daily cap and call it again every job.
+glob REST_FILE: str = "/tmp/atlas_ai_rest.json";
+
+def _load_rest() -> None {
+    try {
+        import json;
+        with open(REST_FILE) as f {
+            data: dict = json.load(f);
+            for k in data.keys() {
+                if k not in _REST or float(data[k][0]) > float(_REST[k][0]) { _REST[k] = data[k]; }
+            }
+        }
+    } except Exception { }
+}
+
+def _save_rest() -> None {
+    try {
+        import json;
+        with open(REST_FILE, "w") as f { json.dump(_REST, f); }
+    } except Exception { }
+}
 
 def _rest_seconds(err: str, kind: str) -> list {
     # [seconds, reason] or [] when the failure is not about availability
@@ -177,6 +213,8 @@ def run_task(fn: any, args: list, check: any, escalate_uncertain: bool = False) 
     # fn(*args) -> raw value from a f"by cur()" function; check(raw) -> [status, value] where
     # status is VALID_RESULT / VALID_EMPTY / UNCERTAIN / INVALID_OUTPUT.
     out = AiOutcome();
+    ollama_base();          # picks up a new tunnel URL pasted into .env (also clears its rest)
+    _load_rest();
     models = chain();
     attempt = 0;
     skipped = 0;
@@ -228,6 +266,7 @@ def run_task(fn: any, args: list, check: any, escalate_uncertain: bool = False) 
                 if rs {
                     # not a bad answer, the model is unavailable: rest it and switch model now
                     _REST[name] = [time.time() + float(rs[0]), str(rs[1])];
+                    _save_rest();
                     print(f"[ai] {name} {rs[1]}; resting {int(rs[0])} s, switching model");
                     skipped += 1;
                     break;
