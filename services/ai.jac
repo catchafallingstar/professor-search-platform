@@ -65,14 +65,74 @@ glob _MODELS: dict = {},
      cur: any = None,
      _LOCK: threading.Lock = threading.Lock();
 
+def ollama_base() -> str {
+    # Quick tunnels get a new URL on every restart: read .env each time so a pasted new
+    # URL takes effect without restarting the preview.
+    try {
+        with open(".env") as f {
+            for line in f.read().splitlines() {
+                if line.strip().startswith("OLLAMA_API_BASE=") {
+                    v = line.split("=", 1)[1].strip().strip('"').strip("'");
+                    if v { return v.rstrip("/"); }
+                }
+            }
+        }
+    } except Exception { }
+    return os.environ.get("OLLAMA_API_BASE", "").strip().rstrip("/");
+}
+
+# ---------- resting models (rate limit, out of credits, local model offline) ----------
+
+glob _REST: dict = {};    # model name -> [until_epoch, reason]
+
+def _rest_seconds(err: str, kind: str) -> list {
+    # [seconds, reason] or [] when the failure is not about availability
+    t = err.lower();
+    if kind == "RATE_LIMITED" or "free-models-per-day" in t {
+        # OpenRouter daily cap: rest until its X-RateLimit-Reset (ms epoch) when present
+        idx = err.find("X-RateLimit-Reset");
+        if idx >= 0 {
+            digits = "".join([c for c in err[idx:idx + 60] if c.isdigit()]);
+            if len(digits) >= 13 {
+                secs: float = int(digits[:13]) / 1000 - time.time();
+                if secs > 0 { return [min(secs, 86400.0), "daily limit reached"]; }
+            }
+        }
+        return [900, "rate limited"];
+    }
+    if "requires more credits" in t or "insufficient credits" in t or "402" in t {
+        return [3600, "out of credits"];
+    }
+    if "cloudflare tunnel error" in t or "530" in t or "connection refused" in t
+        or "failed to resolve" in t or "name or service not known" in t {
+        return [120, "local model offline"];
+    }
+    return [];
+}
+
+def resting() -> list[dict] {
+    now = time.time();
+    out: list[dict] = [];
+    for m in list(_REST.keys()) {
+        v: list = _REST[m];
+        until: float = float(v[0]);
+        if until > now {
+            out.append({"model": m, "seconds_left": int(until - now), "reason": v[1]});
+        }
+    }
+    return out;
+}
+
 def _model(name: str) -> Model {
-    if name not in _MODELS {
+    key_name = name;
+    if name.startswith("ollama") { key_name = name + "@" + ollama_base(); }
+    if key_name not in _MODELS {
         cfg: dict = {};
         key = "";
         if name.startswith("openrouter/") {
             key = os.environ.get("OPENROUTER_API_KEY", "");
         } elif name.startswith("ollama") {
-            base = os.environ.get("OLLAMA_API_BASE", "").strip();
+            base = ollama_base();
             if base { cfg["base_url"] = base; }
         }
         params: dict = {"temperature": 0.0, "max_tokens": 4000};
@@ -86,9 +146,9 @@ def _model(name: str) -> Model {
             # reasoning text and return no JSON, which fails every typed answer
             model_id = "ollama_chat/" + name.split("/", 1)[1];
         }
-        _MODELS[name] = Model(model_name=model_id, api_key=key, config=cfg, call_params=params);
+        _MODELS[key_name] = Model(model_name=model_id, api_key=key, config=cfg, call_params=params);
     }
-    return _MODELS[name];
+    return _MODELS[key_name];
 }
 
 # ---------- outcome of one AI task ----------
@@ -119,7 +179,15 @@ def run_task(fn: any, args: list, check: any, escalate_uncertain: bool = False) 
     out = AiOutcome();
     models = chain();
     attempt = 0;
+    skipped = 0;
     for (i, name) in enumerate(models) {
+        rest: list = _REST.get(name, [0, ""]);
+        if float(rest[0]) > time.time() {
+            # resting (daily limit, no credits, local model offline): go straight to the next model
+            skipped += 1;
+            out.last_error = name + " resting: " + str(rest[1]);
+            continue;
+        }
         out.models_attempted.append(name);
         for retry in range(2) {          # one retry on the same model, then fall back
             attempt += 1;
@@ -156,9 +224,23 @@ def run_task(fn: any, args: list, check: any, escalate_uncertain: bool = False) 
                     out.status = "RETRY_LATER";
                     return out;
                 }
-                if out.error_kind == "RATE_LIMITED" { time.sleep(5); }
+                rs = _rest_seconds(str(e), out.error_kind);
+                if rs {
+                    # not a bad answer, the model is unavailable: rest it and switch model now
+                    _REST[name] = [time.time() + float(rs[0]), str(rs[1])];
+                    print(f"[ai] {name} {rs[1]}; resting {int(rs[0])} s, switching model");
+                    skipped += 1;
+                    break;
+                }
             }
         }
+    }
+    if models and skipped >= len(models) {
+        # every model is unavailable right now: wait and retry, never a staff-review item
+        out.status = "RETRY_LATER";
+        out.error_kind = "ALL_MODELS_RESTING";
+        out.attempt_number = attempt;
+        return out;
     }
     out.status = "STAFF_REVIEW";
     out.attempt_number = attempt;
