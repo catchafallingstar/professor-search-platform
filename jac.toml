@@ -23,7 +23,11 @@ font = "dm-sans"
 radius = "small"
 menuAccent = "subtle"
 menuColor = "default"
+
 [dependencies]
+ddgs = "~=9.16"
+pymongo = "~=4.18"
+
 [dependencies.npm]
 "@fontsource-variable/dm-sans" = "*"
 react = "^18.2.0"

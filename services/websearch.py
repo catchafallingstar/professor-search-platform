@@ -31,7 +31,8 @@ HIGH = ("/openings", "/join", "/join-us", "/positions", "/opportunities", "/pros
 LOW = ("/news", "/events", "/alumni", "/admissions", "/campus-life", "/athletics", "/giving", "/calendar")
 BLOCKED_HOSTS = ("linkedin.com", "facebook.com", "twitter.com", "x.com", "instagram.com", "youtube.com",
                  "ratemyprofessors.com", "glassdoor.com", "indeed.com", "researchgate.net", "academia.edu",
-                 "wikipedia.org", "zhihu.com", "reddit.com")
+                 "wikipedia.org", "zhihu.com", "reddit.com", "scholar.google.", "github.com", "orcid.org",
+                 "semanticscholar.org", "dblp.org", "pubmed.ncbi", "openalex.org")
 
 
 class SearchUnavailable(Exception):
@@ -77,7 +78,9 @@ def _ok():
 
 def _cached(q):
     d = st.db().search_cache.find_one({"_id": q})
-    if d and time.time() - d.get("t", 0) < CACHE_DAYS * 86400:
+    # an empty answer is kept for 1 day only: it is often a transient engine hiccup
+    ttl = (CACHE_DAYS if d and d.get("results") else 1) * 86400
+    if d and time.time() - d.get("t", 0) < ttl:
         return d["results"]
     return None
 
@@ -130,8 +133,16 @@ def rank(results, domain, name):
             continue
         path = urllib.parse.urlparse(url).path.lower()
         s = 0
-        if domain and (host == domain or host.endswith("." + domain)):
+        on_campus = bool(domain) and (host == domain or host.endswith("." + domain))
+        if on_campus:
             s += 50
+        elif domain:
+            # off-campus page (lab site on its own domain, Google Sites, github.io) must mention
+            # the university, or it is likely a namesake ("John Allison" at another school)
+            school = domain.split(".")[0]
+            blob = (r.get("title", "") + " " + r.get("snippet", "") + " " + url).lower()
+            if school not in blob and domain not in blob:
+                continue
         if any(h in path for h in HIGH):
             s += 30
         if any(l in path for l in LOW):
@@ -141,6 +152,8 @@ def rank(results, domain, name):
             s += 20
         if any(w in text for w in ("recruit", "openings", "prospective", "join", "phd student", "postdoc", "position")):
             s += 15
+        if any(w in (host + path) for w in ("lab", "group", "sites.google", "github.io")) or last and last in host:
+            s += 25            # the professor's own lab / group / personal site: where "join us" lives
         scored.append((s, r))
     scored.sort(key=lambda x: -x[0])
     seen, out = set(), []
@@ -151,18 +164,30 @@ def rank(results, domain, name):
     return out
 
 
+def _plain(name):
+    # "Patrícia Alves-Oliveira" -> "Patricia Alves-Oliveira": accents break exact-phrase search
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", name or "") if not unicodedata.combining(c)).strip()
+
+
 def hiring_queries(name, domain):
-    q = [f'"{name}" "PhD students"', f'"{name}" recruiting', f'"{name}" "join our lab"', f'"{name}" openings']
-    if domain:
-        q = [f'site:{domain} "{name}" PhD', f'site:{domain} "{name}" recruiting'] + q
-    return q
+    # Broad first: find the professor's lab / personal site (where "join us" pages live), then
+    # recruitment-specific phrasings. Strict site:+quote+keyword combos mostly returned nothing.
+    n = _plain(name)
+    school = (domain or "").split(".")[0]
+    return [f"{n} {school} lab", f'"{n}" prospective students', f'"{n}" lab join', f"{n} {school} PhD students recruiting"]
 
 
 def find_hiring_candidates(name, domain, max_queries=3, max_urls=5):
     """Run a few controlled queries (stop early once enough candidates) -> ranked URLs."""
+    # one broad query usually finds the lab / personal site; stop as soon as one is ranked in
+    # (each extra query costs search budget: ~400/day shared by the whole pipeline)
     found = []
+    last = (_plain(name).split() or [""])[-1].lower()
     for q in hiring_queries(name, domain)[:max_queries]:
         found += search(q)
-        if len(rank(found, domain, name)) >= max_urls:
+        ranked = rank(found, domain, name)
+        own = [r for r in ranked if any(w in r["url"].lower() for w in ("lab", "group", "sites.google", "github.io")) or (last and last in _host(r["url"]))]
+        if own or len(ranked) >= max_urls:
             break
     return [r["url"] for r in rank(found, domain, name)[:max_urls]]

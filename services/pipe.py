@@ -1159,6 +1159,21 @@ def hiring_sentence_ok(quote):
     return True
 
 
+_JOIN_LINK = _re.compile(r"\[([^\]]{2,80})\]\((https?://[^)\s]+)\)")
+_JOIN_WORDS = _re.compile(r"\b(join|joining|openings?|positions?|opportunit\w*|prospective|vacanc\w*|hiring|recruit\w*|apply)\b", _re.I)
+
+
+def join_links(page_text, base_url, limit=2):
+    """Links on a lab/personal page that point to its own "Join us / Openings / Prospective
+    students" page - the usual home of a hiring statement. Same site only."""
+    host = urllib.parse.urlparse(base_url or "").netloc.lower()
+    out = []
+    for text, href in _JOIN_LINK.findall(page_text or ""):
+        if _JOIN_WORDS.search(text) and urllib.parse.urlparse(href).netloc.lower() == host and href not in out:
+            out.append(href)
+    return out[:limit]
+
+
 def _hiring_on_page(ai, p, inst, url, method):
     """Fetch one page, ask the model, verify the quote on the fetched text.
     Returns ("FOUND"|"UNCERTAIN"|"NONE"|"FAILED", record)."""
@@ -1171,6 +1186,12 @@ def _hiring_on_page(ai, p, inst, url, method):
     if o.status == "STAFF_REVIEW":
         return "FAILED", o
     if o.status == "VALID_EMPTY":
+        # nothing on this page: follow its own "Join us / Openings" links once
+        if method != "join_link":
+            for sub in join_links(page["text"], page.get("url") or url):
+                kind, rec = _hiring_on_page(ai, p, inst, sub, "join_link")
+                if kind in ("FOUND", "UNCERTAIN", "RETRY"):
+                    return kind, rec
         return "NONE", None
     f = o.value
     if not fx.quote_on_page(f.quote, page["text"]):
@@ -1197,6 +1218,7 @@ def check_hiring(p, inst):
     professor keeps their previous result and is re-checked later."""
     ai = _ai()
     if not ai:
+        log(f"Hiring check for {p['name']} skipped: no AI model configured.")
         return None
     ts = st.now_iso()
     uncertain, failures = None, []
@@ -1208,6 +1230,7 @@ def check_hiring(p, inst):
         seen.add(url)
         kind, rec = _hiring_on_page(ai, p, inst, url, method)
         if kind == "RETRY":
+            log(f"Hiring check for {p['name']} postponed: AI models unavailable ({', '.join(m['model'] + ' ' + m['reason'] for m in ai.resting())}).")
             return None                # keep the previous result; re-checked on the next run
         if kind == "FOUND":
             return dict(rec, checked_at=ts, date_found=ts)
