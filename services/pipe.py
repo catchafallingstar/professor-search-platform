@@ -876,6 +876,37 @@ def review_queue_state():
             "running": d.jobs.count_documents({"kind": "REVIEW_RETRY", "status": "RUNNING"})}
 
 
+def run_hiring_job(professor_id):
+    """Re-run the hiring check (own pages, then web search) for one professor with the current
+    strict rules. Keeps the previous result when the check could not run (model or search down)."""
+    p = st.get_professor(professor_id)
+    if not p:
+        return {"ok": False, "message": "Professor not found."}
+    inst = st.get_institution(p.get("institution_id", ""))
+    if inst is None:
+        return {"ok": False, "message": "University not found."}
+    h = check_hiring(p, inst)
+    if h is None:
+        return {"ok": True, "professor": p["name"], "result": "RETRY_LATER"}
+    if h["status"] == "STAFF_REVIEW":
+        st.update_professor(p["id"], {"last_hiring_update": h["checked_at"]})
+        return {"ok": False, "professor": p["name"], "result": "STAFF_REVIEW"}
+    st.update_professor(p["id"], {"hiring": h, "has_hiring": h["status"] in HIRING_POSITIVE,
+                                  "hiring_status": h["status"], "last_hiring_update": h["checked_at"]})
+    st.invalidate_search()
+    return {"ok": True, "professor": p["name"], "result": h["status"],
+            "message": f"{p['name']}: {h['status']}" + (f" | {h['quote'][:100]}" if h.get("quote") else "")}
+
+
+def queue_hiring_checks(query=None, priority=1):
+    """Queue one HIRING_CHECK job per professor matching query (default: every processed professor)."""
+    n = 0
+    for p in st.db().professors.find(query if query is not None else {"pipeline_done": True}, {"_id": 1}):
+        queue_test_job("HIRING_CHECK", p["_id"], priority=priority)
+        n += 1
+    return n
+
+
 def queue_test_job(kind, professor_id, priority=0):
     """Store a one-off job; the background worker runs it before anything else (higher priority first)."""
     jid = f"{kind}:{professor_id}"
@@ -898,6 +929,8 @@ def run_next_job():
             res = run_grant_job(job["professor_id"])
         elif job["kind"] == "REVIEW_RETRY":
             res = retry_review_item(job["professor_id"])
+        elif job["kind"] == "HIRING_CHECK":
+            res = run_hiring_job(job["professor_id"])
         else:
             res = run_llm_identity_job(job["professor_id"])
         status = "DONE" if res.get("ok") else "FAILED"
