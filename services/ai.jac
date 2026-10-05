@@ -401,7 +401,7 @@ sem HiringStatus.DIRECT_HIRING = "This professor or lab explicitly says they are
 sem HiringStatus.INDIRECT_HIRING = "Invites prospective students/postdocs to contact the professor or apply to join the lab (e.g. 'Prospective PhD students interested in joining the lab should contact Professor Smith').";
 sem HiringStatus.GENERAL_RECRUITMENT = "Department- or university-wide recruitment that does not name this professor's lab (e.g. 'Our department is accepting PhD applications').";
 sem HiringStatus.UNCERTAIN = "Vague openness that is not explicit (e.g. 'We are always interested in hearing from talented students').";
-sem HiringStatus.NO_SIGNAL = "No hiring or recruitment language on the page. A list of current lab members is NOT a hiring signal.";
+sem HiringStatus.NO_SIGNAL = "No OPEN, forward-looking invitation to apply or join. These are all NO_SIGNAL: lists of current lab members; news that someone joined, was welcomed, hired, appointed or awarded a fellowship (e.g. 'We are delighted to welcome X as our Postdoctoral Fellow'); past positions; alumni; graduations; course or event announcements.";
 
 obj HiringFinding {
     has status: HiringStatus = HiringStatus.NO_SIGNAL,
@@ -425,6 +425,26 @@ def _check_hiring(raw: any) -> list {
 def extract_hiring(page_text: str, professor_name: str) -> AiOutcome {
     # UNCERTAIN is a valid hiring classification: not escalated.
     return run_task(_hiring, [page_text[:page_cap(20000)], professor_name], _check_hiring);
+}
+
+# Second opinion on one candidate sentence: is it really an open invitation to apply?
+obj HiringVerdict {
+    has is_open_recruitment: bool = False,
+        reason: str = "";
+}
+sem HiringVerdict.is_open_recruitment = "True ONLY if the sentence invites people to apply for, contact about, or join an opening that exists now or in the future (PhD students, postdocs, research assistants, staff) in this professor's lab or group, or by this professor. Also True when it invites people interested in working with or joining the lab to contact the professor (indirect recruitment). False for announcements that someone joined, was welcomed, hired, appointed, promoted or received a fellowship or award; for descriptions of current or past members; for the professor's own appointment; and for anything in the past tense.";
+sem HiringVerdict.reason = "One short sentence explaining the decision.";
+
+def _verify_hiring(sentence: str, professor_name: str) -> HiringVerdict by cur();
+sem _verify_hiring = "Strictly judge whether this one sentence, copied from a web page, is a real recruitment signal for the named professor's lab. A news item welcoming or announcing a new member (even a new postdoc or fellow) is NOT recruitment. When in doubt, answer false.";
+
+def _check_verdict(raw: any) -> list {
+    if not isinstance(raw, HiringVerdict) { return ["INVALID_OUTPUT", None]; }
+    return ["VALID_RESULT", raw];
+}
+
+def verify_hiring(sentence: str, professor_name: str) -> AiOutcome {
+    return run_task(_verify_hiring, [sentence[:1500], professor_name], _check_verdict);
 }
 
 # ---------- task 6: publications of a professor nobody else could identify ----------

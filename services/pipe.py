@@ -1099,6 +1099,33 @@ def enrich_profile(p, inst):
 HIRING_POSITIVE = ("DIRECT_HIRING", "INDIRECT_HIRING", "GENERAL_RECRUITMENT")
 
 
+import re as _re
+
+# Announcements, not openings: "we are delighted to welcome X as our postdoc", "X joined the lab".
+_NOT_HIRING = _re.compile(
+    r"\b(welcom(e|es|ed|ing)|congratulat\w*|joined|has joined|have joined|is joining|will join us as|"
+    r"was (hired|appointed|named|awarded)|has been (hired|appointed|named|awarded)|"
+    r"appointed|promoted|award(ed)? (a|the)|receiv(ed|es) (a|the)|alumni|former (student|postdoc)|"
+    r"graduated|defended)\b", _re.I)
+# Words that make a sentence an open invitation.
+_OPEN_CALL = _re.compile(
+    r"\b(recruit\w*|hiring|openings?|open positions?|vacanc\w*|seeking|looking for|accepting|"
+    r"apply|applications?|applicants?|prospective|interested (students|candidates|applicants)|"
+    r"positions? (are |is )?available|join (my|our|the|his|her|their) (lab|group|team)|please contact|"
+    r"contact (me|prof|dr)|interest(ed)? in (working|joining)|available for (new )?(graduate|phd|students|advisees))\b", _re.I)
+
+
+def hiring_sentence_ok(quote):
+    """Plain-code gate before any AI verdict is trusted: an open call must use invitation
+    language, and a sentence announcing someone who already joined is never a hiring signal."""
+    q = (quote or "").strip()
+    if not q or not _OPEN_CALL.search(q):
+        return False
+    if _NOT_HIRING.search(q) and not _re.search(r"\b(apply|applications?|prospective|recruit\w*|openings?)\b", q, _re.I):
+        return False
+    return True
+
+
 def _hiring_on_page(ai, p, inst, url, method):
     """Fetch one page, ask the model, verify the quote on the fetched text.
     Returns ("FOUND"|"UNCERTAIN"|"NONE"|"FAILED", record)."""
@@ -1115,6 +1142,13 @@ def _hiring_on_page(ai, p, inst, url, method):
     f = o.value
     if not fx.quote_on_page(f.quote, page["text"]):
         return "NONE", None           # the model's sentence is not on the page: rejected
+    if not hiring_sentence_ok(f.quote):
+        return "NONE", None           # announcement / no invitation language: not a hiring signal
+    v = ai.verify_hiring(f.quote, p["name"])
+    if v.status == "RETRY_LATER":
+        return "RETRY", None
+    if v.status != "VALID_RESULT" or not v.value.is_open_recruitment:
+        return "NONE", None           # second AI check: not a real open call
     rec = {"status": f.status.name, "quote": f.quote.strip(), "source_url": page.get("url") or url,
            "source_title": page.get("title") or "", "page_verified": True, "discovery_method": method,
            "confidence": round(float(f.confidence or 0), 2), **_ai_meta(o)}
