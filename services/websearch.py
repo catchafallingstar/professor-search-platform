@@ -99,8 +99,13 @@ def search(query, max_results=8):
             rows = DDGS(timeout=20).text(query, max_results=max_results, region="us-en", safesearch="moderate") or []
         except Exception as e:
             _STATE["last"] = time.time()
-            _fail(e)
-            raise SearchUnavailable(f"{type(e).__name__}: {str(e)[:150]}")
+            if "no results" in str(e).lower():
+                # DDGS raises when a query simply has no hits (common for "site:" queries).
+                # That is an answer, not a failure: it must not pause search for everyone.
+                rows = []
+            else:
+                _fail(e)
+                raise SearchUnavailable(f"{type(e).__name__}: {str(e)[:150]}")
         _STATE["last"] = time.time()
     _ok()
     out = [{"url": r.get("href") or r.get("url") or "", "title": r.get("title") or "", "snippet": r.get("body") or ""}

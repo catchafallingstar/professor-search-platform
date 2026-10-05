@@ -10,7 +10,29 @@ import from .ui.badge { Badge }
 import from .ui.spinner { Spinner }
 import from .ui.table { Table, TableHeader, TableBody, TableRow, TableHead, TableCell }
 import from .ui.empty { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription }
-sv import from ..services.queue { list_staff_review, resolve_staff_review, requeue_staff_review, ReviewItem, StepResult }
+import from react { useEffect }
+sv import from ..services.queue { list_staff_review, resolve_staff_review, requeue_staff_review, list_recent_jobs, ReviewItem, StepResult, QueueJob }
+
+glob RESULT_LABELS: dict[str, str] = {
+    "FIXED": "Fixed", "FIXED_MATCHED": "Fixed: OpenAlex identity matched", "FIXED_SCHOLAR": "Fixed: Google Scholar profile",
+    "FIXED_FACULTY_PAGE": "Fixed: publications from faculty page", "NO_RESULT_FOUND": "Retried: still no result",
+    "RETRY_LATER": "Waiting: a step will run again shortly", "PAGE_UNREACHABLE": "Retried: page still blocked",
+    "STILL_FAILING": "Retried: still failing"
+};
+
+def result_label(r: str) -> str {
+    if r.startswith("FIXED_GRANTS_") { return "Fixed: " + r.replace("FIXED_GRANTS_", "") + " grants found"; }
+    return RESULT_LABELS.get(r, r.replace("_", " ").lower());
+}
+
+def:pub QueueBadge(status: str) -> JsxElement {
+    if status == "RUNNING" { return <Badge className="gap-1"><Spinner className="size-3" />{"Running"}</Badge>; }
+    if status == "QUEUED" or status == "WAITING" { return <Badge variant="secondary">{"Waiting"}</Badge>; }
+    if status == "DONE" { return <Badge variant="outline">{"Done"}</Badge>; }
+    if status == "FAILED" { return <Badge variant="destructive">{"Failed"}</Badge>; }
+    if status == "RETRIED" { return <Badge variant="outline">{"Retried"}</Badge>; }
+    return <span></span>;
+}
 
 glob TASK_LABELS: dict[str, str] = {
     "OPENALEX_IDENTITY": "OpenAlex identity",
@@ -24,10 +46,22 @@ glob TASK_LABELS: dict[str, str] = {
 
 def:pub StaffReview() -> JsxElement {
     has items: list[ReviewItem] = [],
+        jobs: list[QueueJob] = [],
         loading: bool = True,
         requeuing: bool = False,
         notice: str = "",
         error: str = "";
+
+    async def load() -> None {
+        try {
+            items = await list_staff_review(200);
+            jobs = await list_recent_jobs(10);
+            error = "";
+        } except Exception as e {
+            error = "Could not load the review list: " + str(e);
+        }
+        loading = False;
+    }
 
     async def requeue() -> None {
         requeuing = True;
@@ -35,21 +69,21 @@ def:pub StaffReview() -> JsxElement {
             r: StepResult = await requeue_staff_review();
             notice = r.message;
             error = "";
+            await load();
         } except Exception as e {
             error = "Could not re-queue: " + str(e);
         }
         requeuing = False;
     }
 
-    async def load() -> None {
-        try {
-            items = await list_staff_review(200);
-            error = "";
-        } except Exception as e {
-            error = "Could not load the review list: " + str(e);
-        }
-        loading = False;
-    }
+    busy: bool = len([j for j in jobs if j.status == "QUEUED" or j.status == "RUNNING"]) > 0;
+
+    # while jobs are waiting or running, refresh every 10 s so results appear on their own
+    useEffect(lambda {
+        if not busy { return None; }
+        timer = setInterval(lambda { load(); }, 10000);
+        return lambda { clearInterval(timer); };
+    }, [busy]);
 
     async def resolve(item_id: str) -> None {
         try {
@@ -98,7 +132,7 @@ def:pub StaffReview() -> JsxElement {
                             <TableHead>{"Task"}</TableHead>
                             <TableHead>{"Professor / university"}</TableHead>
                             <TableHead>{"Problem"}</TableHead>
-                            <TableHead>{"Checked"}</TableHead>
+                            <TableHead>{"Status"}</TableHead>
                             <TableHead className="text-right">{"Action"}</TableHead>
                         </TableRow>
                     </TableHeader>
@@ -119,7 +153,13 @@ def:pub StaffReview() -> JsxElement {
                                         {it.source_url and <a href={it.source_url} target="_blank" rel="noreferrer" className="truncate text-xs text-primary hover:underline">{it.source_url}</a>}
                                     </div>
                                 </TableCell>
-                                <TableCell><span className="text-xs tabular-nums text-muted-foreground">{it.attempted_at[:10]}</span></TableCell>
+                                <TableCell>
+                                    <div className="flex flex-col items-start gap-1">
+                                        <QueueBadge status={it.queue_status} />
+                                        {it.last_retry_result and <span className="max-w-48 text-xs text-muted-foreground">{result_label(it.last_retry_result)}</span>}
+                                        <span className="text-xs tabular-nums text-muted-foreground">{(it.last_retry_at or it.attempted_at)[:16].replace("T", " ")}</span>
+                                    </div>
+                                </TableCell>
                                 <TableCell className="text-right">
                                     <Button variant="ghost" size="sm" onClick={lambda { resolve(it.id); }}>{"Mark handled"}</Button>
                                 </TableCell>
@@ -128,6 +168,25 @@ def:pub StaffReview() -> JsxElement {
                     </TableBody>
                 </Table>
             </div>}
+
+            <div className="mt-6 flex flex-col gap-2 border-t pt-4">
+                <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium">{"Recent work"}</span>
+                    <span className="text-xs text-muted-foreground">{"Running and waiting first (re-queued items at the top), then the last finished jobs"}</span>
+                </div>
+                {not loading and len(jobs) == 0 and <p className="text-sm text-muted-foreground">{"No queued or recent jobs."}</p>}
+                {len(jobs) > 0 and <div className="flex flex-col">
+                    {for j in jobs {
+                        <div key={j.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b pt-2 pb-2 text-sm last:border-b-0">
+                            <QueueBadge status={j.status} />
+                            <span className="font-medium">{j.professor or "Unknown professor"}</span>
+                            <span className="text-xs text-muted-foreground">{TASK_LABELS.get(j.task, j.task.replace("_", " ").lower())}</span>
+                            {j.result and <span className="text-xs text-muted-foreground">{result_label(j.result)}</span>}
+                            <span className="ml-auto text-xs tabular-nums text-muted-foreground">{j.when[:16].replace("T", " ")}</span>
+                        </div>
+                    }}
+                </div>}
+            </div>
         </CardContent>
     </Card>;
 }

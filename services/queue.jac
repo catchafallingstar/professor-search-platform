@@ -142,7 +142,20 @@ obj ReviewItem {
         professor_id: str = "",
         department: str = "",
         source_url: str = "",
-        attempted_at: str = "";
+        attempted_at: str = "",
+        queue_status: str = "",
+        last_retry_result: str = "",
+        last_retry_at: str = "";
+}
+
+obj QueueJob {
+    has id: str = "",
+        kind: str = "",
+        status: str = "",
+        professor: str = "",
+        task: str = "",
+        result: str = "",
+        when: str = "";
 }
 
 def:priv list_staff_review(limit: int = 200) -> list[ReviewItem] {
@@ -154,15 +167,25 @@ def:priv list_staff_review(limit: int = 200) -> list[ReviewItem] {
             detail=str(d.get("last_error") or ""), university=str(d.get("university") or ""),
             professor=str(d.get("professor") or ""), professor_id=str(d.get("professor_id") or ""),
             department=str(d.get("department") or ""), source_url=str(d.get("source_url") or ""),
-            attempted_at=str(d.get("attempted_at") or "")
+            attempted_at=str(d.get("attempted_at") or ""), queue_status=str(d.get("queue_status") or ""),
+            last_retry_result=str(d.get("last_retry_result") or ""), last_retry_at=str(d.get("last_retry_at") or "")
         ));
     }
     return out;
 }
 
+def:priv list_recent_jobs(limit: int = 10) -> list[QueueJob] {
+    require_staff();
+    return [QueueJob(id=str(j["id"]), kind=str(j["kind"]), status=str(j["status"]), professor=str(j["professor"]),
+                     task=str(j["task"]), result=str(j["result"]), when=str(j["when"]))
+            for j in (pipe.recent_jobs(int(limit)) as list[dict])];
+}
+
 def:priv requeue_staff_review() -> StepResult {
     require_staff();
-    n = int(pipe.queue_review_retries(""));
+    r = pipe.queue_review_retries("") as tuple;
+    n = int(r[0]);
+    already = int(r[1]);
     started = "";
     if not pipe.running() {
         # queued jobs only run while the worker is on
@@ -170,8 +193,9 @@ def:priv requeue_staff_review() -> StepResult {
         pipe.log("Auto-processing started (staff review re-queue).");
         started = " Auto-processing was paused and has been started.";
     }
-    s = pipe.review_queue_state() as dict;
-    return StepResult(message=f"Re-queued {n} items. {s['queued']} waiting, {s['running']} running; each continues from its next unfinished step." + started);
+    plural: str = "" if n == 1 else "s";
+    waiting_note: str = f" ({already} already waiting)" if already else "";
+    return StepResult(message=f"Re-queued {n} item{plural} at the top of the queue{waiting_note}. Fixed items leave this list; the rest show their latest result.{started}");
 }
 
 def:priv resolve_staff_review(item_id: str) -> StepResult {
@@ -299,7 +323,7 @@ def:pub internal_action(worker_token: str = "", action: str = "", arg: str = "")
     }
     if action == "retry_unreadable" { return StepResult(message=f"Re-queued {pipe.requeue()} universities."); }
     if action == "retry_staff_review" {
-        n = pipe.queue_review_retries(arg);
+        n = (pipe.queue_review_retries(arg) as tuple)[0];
         if not pipe.running() { pipe.start(); pipe.log("Auto-processing started (staff review re-queue)."); }
         return StepResult(message=f"Queued {n} review retries; worker running.");
     }

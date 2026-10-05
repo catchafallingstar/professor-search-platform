@@ -818,28 +818,56 @@ def retry_review_item(item_id):
 
 
 def queue_review_retries(task_type=""):
-    """Re-queue: one job per open review item, unless that item already has a job waiting or running
-    (so pressing the button twice never doubles the work). Items whose every step is finished
-    (NO_RESULT_FOUND with all steps done) are left alone - re-running them would repeat the same work."""
+    """Re-queue (staff button): one job per open review item, at the TOP of the queue (priority 1).
+    An item that already has a job waiting or running is not queued twice. An item whose every step
+    already ran (or whose page needs a person) gets one fresh full pass - sites, Scholar and OpenAlex
+    change over time - and the steps record is reset only for that pass.
+    Returns (queued, skipped_already_waiting)."""
     d = st.db()
     # jobs left RUNNING by a restart are stale: put them back in the queue
     d.jobs.update_many({"kind": "REVIEW_RETRY", "status": "RUNNING"}, {"$set": {"status": "QUEUED", "queued_at": st.now_iso()}})
     q = {"resolved": False}
     if task_type:
         q["task_type"] = task_type
-    n = 0
+    n, waiting = 0, 0
     for item in d.staff_review.find(q, {"_id": 1, "reason": 1, "steps_done": 1}):
-        if item.get("reason") == "NO_RESULT_FOUND" and set(IDENTITY_STEPS) <= set(item.get("steps_done") or []):
-            continue                                    # every current step already ran: nothing new to try
-        if item.get("reason") == "FACULTY_PAGE_UNREACHABLE":
-            continue                                    # needs a person: retrying the same URL repeats the same failure
         jid = f"REVIEW_RETRY:{item['_id']}"
         job = d.jobs.find_one({"_id": jid}, {"status": 1})
         if job and job.get("status") in ("QUEUED", "RUNNING"):
+            waiting += 1
             continue
-        queue_test_job("REVIEW_RETRY", item["_id"])
+        exhausted = (item.get("reason") == "NO_RESULT_FOUND" and set(IDENTITY_STEPS) <= set(item.get("steps_done") or [])) \
+            or item.get("reason") == "FACULTY_PAGE_UNREACHABLE"
+        if exhausted:
+            d.staff_review.update_one({"_id": item["_id"]}, {"$set": {"steps_done": [], "page_tries": 0}})
+        d.staff_review.update_one({"_id": item["_id"]}, {"$set": {"queue_status": "QUEUED", "queued_at": st.now_iso()}})
+        queue_test_job("REVIEW_RETRY", item["_id"], priority=1)
         n += 1
-    return n
+    return n, waiting
+
+
+def recent_jobs(limit=10):
+    """Queue view for staff: running first, then waiting (re-queued review jobs at the top, in run
+    order), then the most recently finished."""
+    d = st.db()
+    order = []
+    order += list(d.jobs.find({"status": "RUNNING"}).sort("started_at", -1))
+    order += list(d.jobs.find({"status": "QUEUED"}).sort([("priority", -1), ("queued_at", 1)]))
+    order += list(d.jobs.find({"status": {"$in": ["DONE", "FAILED"]}}).sort("finished_at", -1).limit(limit))
+    out = []
+    for j in order[:limit]:
+        res = j.get("result") or {}
+        target = str(j.get("professor_id") or "")
+        item = d.staff_review.find_one({"_id": target}) if j.get("kind") == "REVIEW_RETRY" else None
+        prof = (item or {}).get("professor") or res.get("professor") or ""
+        if not prof and target:
+            pp = st.get_professor(target.split(":http")[0]) if ":" in target else None
+            prof = (pp or {}).get("name", "")
+        out.append({"id": str(j["_id"]), "kind": j.get("kind", ""), "status": j.get("status", ""),
+                    "professor": prof, "task": (item or {}).get("task_type") or target.split(":")[0],
+                    "result": str(res.get("result") or res.get("message") or res.get("grants_linked") or ""),
+                    "when": j.get("finished_at") or j.get("started_at") or j.get("queued_at") or ""})
+    return out
 
 
 def review_queue_state():
@@ -848,20 +876,23 @@ def review_queue_state():
             "running": d.jobs.count_documents({"kind": "REVIEW_RETRY", "status": "RUNNING"})}
 
 
-def queue_test_job(kind, professor_id):
-    """Store a one-off job; the background worker runs it before anything else."""
+def queue_test_job(kind, professor_id, priority=0):
+    """Store a one-off job; the background worker runs it before anything else (higher priority first)."""
     jid = f"{kind}:{professor_id}"
-    st.db().jobs.replace_one({"_id": jid}, {"_id": jid, "kind": kind, "professor_id": professor_id,
+    st.db().jobs.replace_one({"_id": jid}, {"_id": jid, "kind": kind, "professor_id": professor_id, "priority": priority,
                                            "status": "QUEUED", "queued_at": st.now_iso()}, upsert=True)
     return jid
 
 
 def run_next_job():
     """Runs one queued one-off job (grant check / LLM identity). Returns a log message or ""."""
-    job = st.db().jobs.find_one({"status": "QUEUED"}, sort=[("queued_at", 1)])
+    # staff re-queues (priority 1) run before anything else, then oldest first
+    job = st.db().jobs.find_one({"status": "QUEUED"}, sort=[("priority", -1), ("queued_at", 1)])
     if job is None:
         return ""
     st.db().jobs.update_one({"_id": job["_id"]}, {"$set": {"status": "RUNNING", "started_at": st.now_iso()}})
+    if job["kind"] == "REVIEW_RETRY":
+        st.db().staff_review.update_one({"_id": job["professor_id"]}, {"$set": {"queue_status": "RUNNING"}})
     try:
         if job["kind"] == "GRANT_CHECK":
             res = run_grant_job(job["professor_id"])
@@ -879,6 +910,11 @@ def run_next_job():
     except Exception as e:
         res, status = {"ok": False, "message": f"{type(e).__name__}: {str(e)[:300]}"}, "FAILED"
     st.db().jobs.update_one({"_id": job["_id"]}, {"$set": {"status": status, "result": res, "finished_at": st.now_iso()}})
+    if job["kind"] == "REVIEW_RETRY":
+        # fixed items are already deleted from the review list; anything left shows its outcome
+        st.db().staff_review.update_one({"_id": job["professor_id"]}, {"$set": {
+            "queue_status": "WAITING" if status == "QUEUED" else "RETRIED",
+            "last_retry_result": str(res.get("result") or res.get("message") or ""), "last_retry_at": st.now_iso()}})
     return f"Job {job['_id']}: {status} - {res.get('result') or res.get('grants_linked', res.get('message', ''))}"
 
 
