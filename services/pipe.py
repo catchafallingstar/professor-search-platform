@@ -261,11 +261,110 @@ def match(p, inst_oid):
             cands = cands[:1]
             note = "Matched on name + institution (dominant OpenAlex profile; smaller duplicates ignored)."
     if len(cands) == 1:
+        if p.get("anchors"):
+            # the faculty page listed papers but none resolved to this author: weaker evidence, say so
+            note += " Faculty-page papers were checked first but none were found under this author in OpenAlex."
         return {"openalex_author_id": _sid(cands[0].get("id")), "orcid": p.get("orcid") or _sid(cands[0].get("orcid")),
                 "match_status": "MATCHED", "match_method": "NAME_INSTITUTION", "match_note": note}
     return {"match_status": "UNRESOLVED", "match_method": "",
             "match_note": "No OpenAlex author for name + institution." if not cands
             else f"Ambiguous: {len(cands)} OpenAlex authors with this name at the institution."}
+
+
+# ---------- identity sanity gate (runs after every OpenAlex match) ----------
+
+# department keyword -> OpenAlex fields that fit it. A department missing here is not checked.
+_DEPT_FIELDS = [
+    (("econom", "finance", "business", "management", "accounting", "marketing", "operations"),
+     {"Economics, Econometrics and Finance", "Business, Management and Accounting", "Decision Sciences",
+      "Social Sciences", "Mathematics", "Computer Science"}),
+    (("political", "sociolog", "public policy", "anthropolog", "communication"),
+     {"Social Sciences", "Economics, Econometrics and Finance", "Arts and Humanities", "Psychology",
+      "Decision Sciences", "Computer Science", "Mathematics"}),
+    (("english", "history", "art", "literature", "language", "philosoph", "classics", "music", "french",
+      "german", "romance", "slavic", "asian", "religio", "linguist", "comparative lit", "film"),
+     {"Arts and Humanities", "Social Sciences", "Psychology"}),
+    (("mathematic", "statistic", "actuarial"),
+     {"Mathematics", "Computer Science", "Decision Sciences", "Physics and Astronomy", "Engineering",
+      "Economics, Econometrics and Finance", "Biochemistry, Genetics and Molecular Biology",
+      "Medicine", "Environmental Science", "Earth and Planetary Sciences", "Neuroscience"}),
+    (("computer", "informatics", "information"),
+     {"Computer Science", "Engineering", "Mathematics", "Decision Sciences", "Social Sciences",
+      "Medicine", "Neuroscience", "Psychology"}),
+    (("electrical", "ece", "mechanical", "aerospace", "civil", "industrial", "materials", "nuclear"),
+     {"Engineering", "Physics and Astronomy", "Materials Science", "Computer Science", "Mathematics",
+      "Energy", "Chemistry", "Environmental Science", "Chemical Engineering"}),
+]
+
+
+def _dept_fields(dept):
+    d = (dept or "").lower()
+    for keys, allowed in _DEPT_FIELDS:
+        if any(k in d for k in keys):
+            return allowed
+    return None
+
+
+def identity_check(p, author_id):
+    """Is this OpenAlex author really this professor? Returns (ok, note).
+    Rejects: (1) works mostly outside the department's fields (Ed Cho, Economics -> cancer biology);
+    (2) the same author already linked to a DIFFERENT person at the same university
+    (Licheng Liu vs Lihong Liu share A5100396472). Joint appointments of the same person pass."""
+    # Two signals must BOTH be bad to reject (either alone misfires: engineers publish in medicine,
+    # people move universities): few recent works written at this university, AND few in fields
+    # that fit the department. A wrong same-name person fails both (Ed Cho: cancer papers, other
+    # institutions); a real professor passes at least one (Erin Cech: social science, but at Michigan).
+    inst = st.get_institution(p.get("institution_id", "")) or {}
+    inst_oid = inst.get("openalex_institution_id", "")
+    works = clean_works(fx.fetch_author_works(author_id, time.gmtime().tm_year - 6), 40)
+    uni = inst.get("name", "this university")
+
+    def at_here(w):
+        for au in w.get("authorships") or []:
+            if _sid((au.get("author") or {}).get("id")) == author_id:
+                return any(_sid(i.get("id")) == inst_oid for i in au.get("institutions") or [])
+        return False
+
+    if inst_oid and len(works) >= 8:
+        flags = [at_here(w) for w in works]          # works are newest first
+        at_inst = sum(flags) / len(flags)
+        recent_here = any(flags[:5])                  # a recent hire: newest papers already list us
+        allowed = _dept_fields(p.get("department"))
+        fields = [((w.get("primary_topic") or {}).get("field") or {}).get("display_name") or "" for w in works]
+        fields = [f for f in fields if f]
+        fit = (sum(1 for f in fields if f in allowed) / len(fields)) if (allowed and fields) else 1.0
+        if at_inst < 0.1 and not recent_here:
+            return False, (f"OpenAlex author {author_id}: only {round(at_inst * 100)}% of {len(works)} recent works list "
+                           f"{uni}, none of the newest; likely a different person with the same name.")
+        if at_inst < 0.25 and fit < 0.5:
+            return False, (f"OpenAlex author {author_id}: only {round(at_inst * 100)}% of {len(works)} recent works list "
+                           f"{uni} and {round(fit * 100)}% fit {p.get('department') or 'the department'}; "
+                           "likely a different person with the same name.")
+    elif inst_oid:
+        # too few recent scholarly works to judge by papers: OpenAlex's current affiliation must be us
+        author = fx.fetch_author(author_id) or {}
+        current = [_sid(i.get("id")) for i in author.get("last_known_institutions") or []]
+        if current and inst_oid not in current and not any(at_here(w) for w in works):
+            names = ", ".join(i.get("display_name", "") for i in (author.get("last_known_institutions") or [])[:2])
+            return False, (f"OpenAlex author {author_id}: few recent works, none at {uni}, and OpenAlex lists "
+                           f"the author at {names}; likely a different person with the same name.")
+    for other in st.db().professors.find({"openalex_author_id": author_id, "_id": {"$ne": p["id"]}},
+                                         {"name": 1, "institution_id": 1}):
+        if not names_match(p["name"], other.get("name", "")):
+            return False, f"OpenAlex author {author_id} is already linked to {other.get('name')} (a different person)."
+    return True, ""
+
+
+def gated(p, fields):
+    """Apply identity_check to a MATCHED result; a failed check becomes UNRESOLVED (never a wrong match)."""
+    aid = fields.get("openalex_author_id")
+    if fields.get("match_status") != "MATCHED" or not aid:
+        return fields
+    ok, note = identity_check(p, aid)
+    if ok:
+        return fields
+    return {"openalex_author_id": "", "orcid": p.get("orcid", ""), "match_status": "UNRESOLVED",
+            "match_method": "", "match_note": "Identity check failed: " + note, "rejected_author_id": aid}
 
 
 SCHOLAR_REASONS = {
@@ -528,9 +627,25 @@ def resolve_unmatched(p, inst, inst_oid):
 GRANT_YEARS = 10
 
 
+def grant_canon_key(funder, award_id):
+    """funder + award number, normalized: "NSF", "1919631" -> "nsf:1919631". "" when no award number."""
+    digits = re.sub(r"\D", "", str(award_id or ""))
+    if len(digits) < 5:
+        return ""
+    f = re.sub(r"[^a-z]", "", (funder or "").lower())
+    f = "nsf" if "nationalsciencefoundation" in f or f.startswith("nsf") else ("nih" if "nationalinstitutesofhealth" in f or f.startswith("nih") else f[:20])
+    return f"{f}:{digits[-7:]}"
+
+
 def _store_grant(g, source_url=""):
-    """Upsert one grant (from NSF / NIH / faculty page) and return its link for the professor."""
+    """Upsert one grant (from NSF / NIH / faculty page) and return its link for the professor.
+    The same funder award already stored (e.g. from OpenAlex) is reused instead of duplicated."""
     gid = g["key"]
+    canon = grant_canon_key(g.get("funder_name"), g.get("funder_award_id"))
+    if canon:
+        existing = st.db().grants.find_one({"canon_key": canon}, {"_id": 1})
+        if existing:
+            return {"id": existing["_id"], "role": g.get("role", "RECIPIENT")}
     start = g.get("start_date") or (f"{g['year']}-01-01" if g.get("year") else "")
     st.upsert_grant({"openalex_award_id": gid, "title": g.get("title", ""), "funder_name": g.get("funder_name", ""),
                      "funder_award_id": g.get("funder_award_id", ""), "amount": float(g.get("amount") or 0),
@@ -986,11 +1101,48 @@ def scholar_backfill_one():
     return f"{p['name']} ({inst['name']}): identity ladder -> {out.get('match_status')}"
 
 
+_NOT_A_PAPER = re.compile(
+    r"^(data for |dataset|supplementa|supporting information|additional file|figure s?\d|table s?\d|"
+    r"video s?\d|replication (data|package|files)|source data|peer review file|reporting summary)", re.I)
+
+
+def _norm_title(t):
+    return re.sub(r"[^a-z0-9]+", " ", (t or "").lower()).strip()
+
+
+def clean_works(works, limit=50):
+    """Scholarly works only, each publication once: drops dataset / supplementary / figure objects
+    (by title, in case OpenAlex typed them as articles), then de-duplicates by DOI, then by
+    normalized title + year. Keeps the most-cited copy of a duplicate."""
+    keep, by_doi, by_title = [], {}, {}
+    for w in works:
+        title = w.get("title") or w.get("display_name") or ""
+        if not title.strip() or _NOT_A_PAPER.search(title.strip()):
+            continue
+        doi = fx.clean_doi(w.get("doi") or "") if w.get("doi") else ""
+        tkey = (_norm_title(title), int(w.get("publication_year") or 0))
+        prev = by_doi.get(doi) if doi else None
+        if prev is None:
+            prev = by_title.get(tkey)
+        if prev is not None:
+            if int(w.get("cited_by_count") or 0) > int(prev.get("cited_by_count") or 0):
+                keep[keep.index(prev)] = w
+                if doi:
+                    by_doi[doi] = w
+                by_title[tkey] = w
+            continue
+        keep.append(w)
+        if doi:
+            by_doi[doi] = w
+        by_title[tkey] = w
+    return keep[:limit]
+
+
 def ingest_works(p):
     """Recent papers (last 5 years) + their OpenAlex subfields. Returns (paper_ids, subfields, fields, award_ids)."""
     year = time.gmtime().tm_year - 4
     ids, subs, flds, awards = [], [], [], []
-    for w in fx.fetch_author_works(p["openalex_author_id"], year):
+    for w in clean_works(fx.fetch_author_works(p["openalex_author_id"], year)):
         wid = _sid(w.get("id"))
         if not wid:
             continue
@@ -1162,6 +1314,41 @@ _OPEN_CALL = _re.compile(
     r"contact (me|prof|dr)|interest(ed)? in (working|joining)|available for (new )?(graduate|phd|students|advisees))\b", _re.I)
 
 
+_MONTHS = "january|february|march|april|may|june|july|august|september|october|november|december|spring|summer|fall|autumn|winter"
+
+
+def hiring_expired(quote):
+    """True when the sentence dates itself in the past: "openings beginning in Fall 2023",
+    "will start September 2020", "join us in spring, summer 2026" (checked in October 2026).
+    The latest year mentioned must not be before this year; if it is this year, a named season /
+    month must not already be over."""
+    years = [int(y) for y in re.findall(r"\b(20\d\d)\b", quote or "")]
+    if not years:
+        return False
+    now = time.gmtime()
+    latest = max(years)
+    if latest < now.tm_year:
+        return True
+    if latest > now.tm_year:
+        return False
+    order = {"january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6, "july": 7,
+             "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+             "winter": 2, "spring": 5, "summer": 8, "fall": 11, "autumn": 11}
+    named = [order[m] for m in re.findall(rf"\b({_MONTHS})\b", (quote or "").lower())]
+    return bool(named) and max(named) < now.tm_mon
+
+
+def hiring_quote_complete(quote):
+    """A cut-off sentence ("We are looking for a highly motivated postdoctoral candidates who")
+    is an extraction error, not evidence."""
+    q = (quote or "").strip().rstrip("_*").strip()
+    if len(q) < 25:
+        return False
+    if q[-1] in ".!?)\"'":
+        return True
+    return not re.search(r"\b(who|which|that|and|or|to|for|with|in|of|the|a|an|our|is|are)$", q, re.I)
+
+
 def hiring_sentence_ok(quote):
     """Plain-code gate before any AI verdict is trusted: an open call must use invitation
     language, and a sentence announcing someone who already joined is never a hiring signal."""
@@ -1212,6 +1399,8 @@ def _hiring_on_page(ai, p, inst, url, method):
         return "NONE", None           # the model's sentence is not on the page: rejected
     if not hiring_sentence_ok(f.quote):
         return "NONE", None           # announcement / no invitation language: not a hiring signal
+    if not hiring_quote_complete(f.quote) or hiring_expired(f.quote):
+        return "NONE", None           # cut-off sentence, or an opening dated in the past
     v = ai.verify_hiring(f.quote, p["name"])
     if v.status == "RETRY_LATER":
         return "RETRY", None
@@ -1291,9 +1480,9 @@ def process_professor(p, inst):
     fields = enrich_profile(p, inst)
     p = dict(p, **fields)
     if not p.get("openalex_author_id"):
-        fields.update(match(p, inst_oid))
+        fields.update(gated(p, match(p, inst_oid)))
         if fields.get("match_status") == "UNRESOLVED":
-            fields.update(resolve_unmatched(dict(p, **fields), inst, inst_oid))
+            fields.update(gated(p, resolve_unmatched(dict(p, **fields), inst, inst_oid) or {}))
     author = fields.get("openalex_author_id") or p.get("openalex_author_id")
     n_papers = len(p.get("paper_ids") or [])
     grants = p.get("grants") or []

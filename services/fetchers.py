@@ -200,19 +200,28 @@ def restore_then_resume():
         threading.Thread(target=_accounts_backup_loop, daemon=True).start()
         # The directory lives in MongoDB (services/store.py): nothing to restore. Load the IPEDS
         # university list if the database is empty, then start the pipeline worker.
-        try:
-            from services import store as st, pipe
-            st.db()
-            if st.count_institutions() == 0:
-                year, n, new = pipe.load_ipeds()
-                pipe.log(f"Loaded {n} research universities from IPEDS {year}.")
-            print(f"[store] MongoDB directory: {st.overview()}")
-            autostart = os.environ.get("PIPELINE_AUTOSTART", "1").strip() not in ("0", "false", "no")
-            if autostart and st.get_setting("worker_running", True) is not False:
-                pipe.start()
-                pipe.log("Auto-processing started.")
-        except Exception as e:
-            print(f"[store] MongoDB directory unavailable: {e}")
+        # MongoDB can be unreachable at boot (wrong/changed password, network blip). Keep retrying
+        # every 30 s instead of giving up for the life of the server; a fixed URI in Settings
+        # (or .env) is picked up on the next attempt without a restart.
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                from services import store as st, pipe
+                st.reset_connection()
+                st.db()
+                if st.count_institutions() == 0:
+                    year, n, new = pipe.load_ipeds()
+                    pipe.log(f"Loaded {n} research universities from IPEDS {year}.")
+                print(f"[store] MongoDB directory: {st.overview()}")
+                autostart = os.environ.get("PIPELINE_AUTOSTART", "1").strip() not in ("0", "false", "no")
+                if autostart and st.get_setting("worker_running", True) is not False:
+                    pipe.start()
+                    pipe.log("Auto-processing started.")
+                break
+            except Exception as e:
+                print(f"[store] MongoDB directory unavailable (attempt {attempt}, retrying in 30 s): {str(e)[:160]}")
+                time.sleep(30)
     threading.Thread(target=_go, daemon=True).start()
 
 
@@ -377,11 +386,17 @@ def fetch_author(author_id):
     return _get_json("/authors/" + short_id(author_id))
 
 
+# Scholarly output only: datasets, supplementary files, figures, paratext etc. are excluded at the
+# source (they filled whole 50-paper lists, e.g. "Data for EMSL Project ..." x50).
+SCHOLARLY_TYPES = "article|review|book|book-chapter|preprint|report|dissertation|letter"
+
+
 def fetch_author_works(author_id, from_year):
+    # 100 candidates so that after de-duplication (pipe.clean_works) a full list of 50 remains
     return _results(_get_json("/works", {
-        "filter": f"authorships.author.id:{short_id(author_id)},from_publication_date:{from_year}-01-01",
+        "filter": f"authorships.author.id:{short_id(author_id)},from_publication_date:{from_year}-01-01,type:{SCHOLARLY_TYPES}",
         "sort": "publication_date:desc",
-        "per-page": "50",
+        "per-page": "100",
     }))
 
 

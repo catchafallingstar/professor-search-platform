@@ -17,11 +17,11 @@ _COLS = ["user_id", "status", "identities", "credentials", "root_id", "role",
 
 
 def _col():
-    uri = os.environ.get("DIRECTORY_MONGODB_URI", "").strip()
-    if not uri:
+    # same cached, self-reconnecting client as the directory (picks up a changed password)
+    from services import store as st
+    if not st.configured():
         return None
-    from pymongo import MongoClient
-    return MongoClient(uri, serverSelectionTimeoutMS=15000)["professor_atlas"]["accounts"]
+    return st.db()["accounts"]
 
 
 def _names(identities):

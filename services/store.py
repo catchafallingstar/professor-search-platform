@@ -24,28 +24,67 @@ import time
 import unicodedata
 
 _LOCK = threading.Lock()
-_DB = {"db": None}
+_DB = {"db": None, "uri": "", "checked": 0.0}
+_ENV_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+
+
+def _current_uri():
+    # .env is re-read so a changed password/URI takes effect without restarting the server;
+    # the process environment (set at startup) is only the fallback.
+    try:
+        with open(_ENV_FILE) as f:
+            for line in f.read().splitlines():
+                if line.strip().startswith("DIRECTORY_MONGODB_URI="):
+                    v = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if v:
+                        os.environ["DIRECTORY_MONGODB_URI"] = v
+                        return v
+    except OSError:
+        pass
+    return os.environ.get("DIRECTORY_MONGODB_URI", "").strip()
 
 
 def configured():
-    return bool(os.environ.get("DIRECTORY_MONGODB_URI", "").strip())
+    return bool(_current_uri())
+
+
+def _connect(uri):
+    from pymongo import MongoClient, ASCENDING
+    client = MongoClient(uri, serverSelectionTimeoutMS=20000, retryWrites=True)
+    client.admin.command("ping")              # fail now (bad password, network) instead of on first query
+    d = client["professor_atlas"]
+    d.professors.create_index([("institution_id", ASCENDING)])
+    d.professors.create_index([("match_status", ASCENDING)])
+    d.professors.create_index([("pipeline_done", ASCENDING)])
+    d.institutions.create_index([("pipeline_state", ASCENDING)])
+    return d
 
 
 def db():
-    if _DB["db"] is None:
-        with _LOCK:
-            if _DB["db"] is None:
-                from pymongo import MongoClient, ASCENDING
-                uri = os.environ.get("DIRECTORY_MONGODB_URI", "").strip()
-                if not uri:
-                    raise RuntimeError("DIRECTORY_MONGODB_URI is not set (add it to .env or Settings > Environment).")
-                d = MongoClient(uri, serverSelectionTimeoutMS=20000, retryWrites=True)["professor_atlas"]
-                d.professors.create_index([("institution_id", ASCENDING)])
-                d.professors.create_index([("match_status", ASCENDING)])
-                d.professors.create_index([("pipeline_done", ASCENDING)])
-                d.institutions.create_index([("pipeline_state", ASCENDING)])
-                _DB["db"] = d
+    # Reconnect when the URI changed (e.g. new password) - checked at most every 15 s.
+    now = time.time()
+    if _DB["db"] is not None and now - _DB["checked"] < 15:
+        return _DB["db"]
+    with _LOCK:
+        uri = _current_uri()
+        if not uri:
+            raise RuntimeError("DIRECTORY_MONGODB_URI is not set (add it in Settings > Environment).")
+        _DB["checked"] = now
+        if _DB["db"] is None or uri != _DB["uri"]:
+            old = _DB["db"]
+            _DB["db"], _DB["uri"] = _connect(uri), uri
+            if old is not None:
+                try:
+                    old.client.close()
+                except Exception:
+                    pass
     return _DB["db"]
+
+
+def reset_connection():
+    """Drop the cached client so the next db() call reconnects (used after an auth failure)."""
+    with _LOCK:
+        _DB["db"], _DB["uri"], _DB["checked"] = None, "", 0.0
 
 
 def now_iso():
@@ -132,9 +171,65 @@ def search_text_for(p):
     return normalize_name(" | ".join(parts))
 
 
+# Words that are never part of a person's name. ("Dean", "Chancellor", "Head" are real surnames -
+# Brian K. Dean, Dean Yang, Stevie Chancellor - so they are only a role when combined with these.)
+_ROLE_WORDS = re.compile(
+    r"\b(chair|provost|director|coordinator|interim|faculty|staff|directory|department|office|media|"
+    r"news|research|about|team|program|center|institute|school|college|graduate|undergraduate|studies|"
+    r"awards?|bookshelf|highlights|affairs|area)\b", re.I)
+_TRAILING_ROLE = re.compile(r"\s+(chair|visiting|emerit\w*|director|dean)$", re.I)
+
+
+def repair_name(name):
+    """Undo common scraper doubling: "Benjamin Bakker Benjamin Bakker" -> "Benjamin Bakker",
+    "Frank Merle Frank Merle Visiting" -> "Frank Merle". Anything else is returned unchanged."""
+    n = " ".join((name or "").split())
+    words = n.split()
+    for k in range(len(words) // 2, 1, -1):
+        if words[:k] == words[k:2 * k]:
+            rest = " ".join(words[2 * k:])
+            if not rest or _TRAILING_ROLE.match(" " + rest):
+                return " ".join(words[:k])
+    return n
+_HEADING_DEPTS = re.compile(
+    r"^(faculty( (and|&) staff)?( directory)?|meet (our|the) faculty|our (faculty|team|people)|people|"
+    r"about( us)?|research( highlights)?|faculty research|faculty (and|&) research|deans? awards?|"
+    r"faculty bookshelf|directory|home|news|in the media)$", re.I)
+
+
+def looks_like_person(name):
+    """Directory scrapers sometimes return a role or page heading as a 'name' ("Interim Chair",
+    "In The Media", "Graduate Studies Director") or a doubled name ("Frank Calegari Frank Calegari
+    Chair"). Those must never become professors."""
+    n = repair_name(name)
+    words = n.split()
+    if len(words) < 2 or len(words) > 6 or any(c.isdigit() for c in n):
+        return False
+    if n.lower().startswith(("from ", "by ", "the ", "in ")):
+        return False
+    if _ROLE_WORDS.search(n):
+        return False
+    # "Sheldon B. Lubar Dean", "Associate Dean ...": a role word only with another role marker
+    low = n.lower()
+    if re.search(r"\b(dean|chancellor|president|head)\b", low) and re.search(r"\b(associate|assistant|vice|executive|senior|academic)\b", low):
+        return False
+    return True
+
+
+def clean_department(department):
+    """A page heading ("Meet Our Faculty", "Faculty & Staff Directory") is not a department."""
+    d = " ".join((department or "").split())
+    return "" if _HEADING_DEPTS.match(d) else d
+
+
 def add_professor(inst, name, title, department, faculty_url):
-    """Insert a newly crawled professor; existing ones are left untouched. Returns True if new."""
+    """Insert a newly crawled professor; existing ones are left untouched. Returns True if new.
+    Role titles / page headings scraped as names are rejected (returns False)."""
     from pymongo.errors import DuplicateKeyError
+    if not looks_like_person(name):
+        return False
+    name = repair_name(name)
+    department = clean_department(department)
     pid = prof_id(inst["id"], name)
     doc = dict(PROF_DEFAULTS)
     ts = now_iso()
@@ -193,6 +288,10 @@ def papers_by_ids(ids):
 def upsert_grant(doc):
     gid = doc["openalex_award_id"]
     ts = now_iso()
+    from services.pipe import grant_canon_key
+    canon = grant_canon_key(doc.get("funder_name"), doc.get("funder_award_id"))
+    if canon:
+        doc = dict(doc, canon_key=canon)
     db().grants.update_one(
         {"_id": gid},
         {"$set": dict({k: v for k, v in doc.items() if k != "openalex_award_id"}, updated_at=ts),
