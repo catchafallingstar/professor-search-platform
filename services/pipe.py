@@ -163,6 +163,8 @@ def crawl(inst):
             flag_staff_review("FACULTY_EXTRACTION", "ALL_LLM_FALLBACKS_FAILED", inst, source_url=url, outcome=failed)
         n = 0
         for r in rows[:MAX_PER_DEPARTMENT]:
+            if _NOT_CORE_TITLE.search(r.get("title") or ""):
+                continue        # adjunct / visiting / emeritus / affiliate: not this university's core faculty
             if st.add_professor(inst, r["name"], r["title"], r["department"] or dept, r["profile_url"] or url):
                 n += 1
         added += n
@@ -365,6 +367,139 @@ def gated(p, fields):
         return fields
     return {"openalex_author_id": "", "orcid": p.get("orcid", ""), "match_status": "UNRESOLVED",
             "match_method": "", "match_note": "Identity check failed: " + note, "rejected_author_id": aid}
+
+
+# ---------- current affiliation (is this person still core faculty HERE?) ----------
+
+_NOT_CORE_TITLE = re.compile(r"\b(adjunct|visiting|emerit(us|a)|affiliate[ds]?|courtesy|honorary|retired|former)\b", re.I)
+_TITLE_ON_PAGE = re.compile(
+    r"((?:(?:adjunct|clinical|visiting|research|teaching|affiliate|courtesy|emerit(?:us|a)|associate|assistant|"
+    r"distinguished|full|endowed)\s+){0,4}professor(?:\s+emerit(?:us|a))?)", re.I)
+
+
+def title_from_page(page_text, name):
+    """The professor's own profile page title ("Adjunct Clinical Assistant Professor"), read from the
+    text just after their name. Directory lists often shorten it to "Assistant Professor"."""
+    t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", page_text or "")
+    t = " ".join(t.split())
+    last = (name.split() or [""])[-1]
+    for m in re.finditer(re.escape(last), t):
+        hit = _TITLE_ON_PAGE.search(t[m.end():m.end() + 160])
+        if hit:
+            return " ".join(w.capitalize() if w.islower() else w for w in hit.group(1).split())
+    return ""
+
+
+def _uni_core(name):
+    return re.split(r"\s*[-,]\s*", name or "")[0].strip().lower()
+
+
+def check_affiliation(p, inst, page_text=""):
+    """Returns {"affiliation_status", "affiliation_note", "title"?}.
+    CURRENT      default; or recent evidence ties the person to this university
+    NOT_CORE     the university's own page calls them adjunct / visiting / emeritus / affiliate
+    LIKELY_MOVED newest papers (OpenAlex affiliations + the raw affiliation text on each paper) list
+                 another organisation and none list this university, or OpenAlex's affiliation
+                 history ends here years ago while continuing elsewhere.
+    Evidence is kept in the note; nothing is deleted."""
+    out = {"affiliation_status": "CURRENT", "affiliation_note": "", "affiliation_checked": st.now_iso()}
+    page_title = title_from_page(page_text, p.get("name", "")) if page_text else ""
+    if page_title:
+        out["title"] = page_title
+        if _NOT_CORE_TITLE.search(page_title):
+            out.update(affiliation_status="NOT_CORE",
+                       affiliation_note=f"The university's own profile page lists the title \"{page_title}\".")
+            return out
+    aid = p.get("openalex_author_id")
+    inst_oid = inst.get("openalex_institution_id", "")
+    if not aid:
+        return out
+    now = time.gmtime().tm_year
+    uni = _uni_core(inst.get("name", ""))
+    recent = clean_works(fx.fetch_author_works(aid, now - 2), 15)
+    here, elsewhere = 0, []
+    for w in recent:
+        for au in w.get("authorships") or []:
+            if _sid((au.get("author") or {}).get("id")) != aid:
+                continue
+            ids = [_sid(i.get("id")) for i in au.get("institutions") or []]
+            raw = " | ".join(au.get("raw_affiliation_strings") or [])
+            names = [i.get("display_name", "") for i in au.get("institutions") or []]
+            if (inst_oid and inst_oid in ids) or (uni and uni in raw.lower()):
+                here += 1
+            elif names or raw.strip():
+                elsewhere.append((w.get("publication_year"), names[0] if names else raw.split(",")[0].strip()))
+            break
+    if here:
+        return out
+    if len(elsewhere) >= 2:
+        orgs = []
+        for _y, o in elsewhere:
+            if o and o not in orgs:
+                orgs.append(o)
+        out.update(affiliation_status="LIKELY_MOVED",
+                   affiliation_note=f"None of the {len(elsewhere)} papers since {now - 2} list {inst.get('name')}; "
+                                    f"they list {', '.join(orgs[:3])}.")
+        return out
+    author = fx.fetch_author(aid) or {}
+    last_here, last_other, other = 0, 0, ""
+    for af in author.get("affiliations") or []:
+        years = af.get("years") or []
+        if not years:
+            continue
+        iid = _sid((af.get("institution") or {}).get("id"))
+        if iid == inst_oid:
+            last_here = max(last_here, max(years))
+        elif max(years) > last_other:
+            last_other, other = max(years), (af.get("institution") or {}).get("display_name", "")
+    if last_here and last_here <= now - 4 and last_other > last_here:
+        out.update(affiliation_status="LIKELY_MOVED",
+                   affiliation_note=f"OpenAlex lists {inst.get('name')} only until {last_here}, then {other} ({last_other}).")
+    return out
+
+
+def find_current_page(p, inst):
+    """For someone who seems to have left: a university profile page elsewhere that names them
+    with a faculty title (e.g. be.ucsd.edu for Aadeel Akhtar). Returns (url, title) or ("", "")."""
+    from services import websearch, discovery
+    home = discovery.domain_of(inst.get("official_website") or "")
+    home_root = ".".join(home.split(".")[-2:]) if home else ""
+    name = p.get("name", "")
+    try:
+        rows = websearch.search(f'"{name}" professor {p.get("department", "")}'.strip(), 10)
+    except websearch.SearchUnavailable:
+        return "", ""
+    full = st.normalize_name(name)
+    for r in rows:
+        host = urllib.parse.urlparse(r["url"]).netloc.lower()
+        if not host.endswith(".edu") or (home_root and host.endswith(home_root)):
+            continue
+        # exact full name only: "Adeel Akhtar" at NJIT is not "Aadeel Akhtar"
+        blob = st.normalize_name(r.get("title", "") + " " + r.get("snippet", ""))
+        if full and full in blob:
+            page = fx.fetch_page(r["url"])
+            if page.get("ok") and full in st.normalize_name(page.get("text", "")):
+                title = title_from_page(page["text"], name)
+                if title:
+                    return page.get("url") or r["url"], title
+    return "", ""
+
+
+def affiliation_fields(p, inst, page_text=None):
+    """check_affiliation + (when the person seems gone) a lead to their current page.
+    A NOT_CORE / LIKELY_MOVED professor stays in the database but leaves default search, and staff
+    get a review item with the evidence."""
+    if page_text is None:
+        page_text = (fx.fetch_page(p["faculty_url"]).get("text", "") if p.get("faculty_url") else "")
+    out = check_affiliation(p, inst, page_text)
+    if out["affiliation_status"] != "CURRENT":
+        url, title = find_current_page(p, inst)
+        if url:
+            out["current_page_url"], out["current_page_title"] = url, title
+            out["affiliation_note"] += f" Possible current page: {url} ({title})."
+        flag_staff_review("AFFILIATION", out["affiliation_status"], inst, p, p.get("faculty_url", ""),
+                          extra={"last_error": out["affiliation_note"], "current_page_url": out.get("current_page_url", "")})
+    return out
 
 
 SCHOLAR_REASONS = {
@@ -1493,6 +1628,13 @@ def process_professor(p, inst):
         n_papers = len(ids)
     else:
         n_papers = len(fields.get("paper_ids") or p.get("paper_ids") or [])
+    # still core faculty here? (adjunct/emeritus on the university's own page, or papers now elsewhere)
+    try:
+        fields.update(affiliation_fields(dict(p, **fields), inst))
+    except fx.RateLimited:
+        raise
+    except Exception as e:
+        log(f"Affiliation check skipped for {p['name']}: {str(e)[:120]}")
     if GRANTS():
         # every outcome (OpenAlex, Scholar, faculty page, unresolved): NSF/NIH by name and the
         # faculty page do not need an OpenAlex author

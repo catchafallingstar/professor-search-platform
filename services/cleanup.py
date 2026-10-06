@@ -166,6 +166,31 @@ def papers():
     log("papers: done")
 
 
+def affiliation():
+    """Current-affiliation check for every professor (page title + recent paper affiliations)."""
+    d = st.db()
+    rows = list(d.professors.find({"affiliation_checked": {"$exists": False}},
+                                  {"name": 1, "department": 1, "faculty_url": 1, "institution_id": 1, "openalex_author_id": 1}))
+    log(f"affiliation: checking {len(rows)} professors")
+    counts_ = {}
+    for i, r in enumerate(rows):
+        p = st._clean(r)
+        inst = st.get_institution(p["institution_id"]) or {}
+        try:
+            f = pipe.affiliation_fields(p, inst)
+        except Exception as e:
+            log(f"affiliation: {p.get('name')} skipped ({str(e)[:100]})")
+            time.sleep(5)
+            continue
+        d.professors.update_one({"_id": r["_id"]}, {"$set": f})
+        counts_[f["affiliation_status"]] = counts_.get(f["affiliation_status"], 0) + 1
+        if f["affiliation_status"] != "CURRENT":
+            log(f"affiliation: {p.get('name')} ({inst.get('name')}) -> {f['affiliation_status']}: {f['affiliation_note'][:160]}")
+        if i % 100 == 0:
+            log(f"affiliation: {i}/{len(rows)} {counts_}")
+    log(f"affiliation: done {counts_}")
+
+
 def counts():
     for inst in st.db().institutions.find({}, {"_id": 1}):
         st.recount(inst["_id"])
@@ -174,7 +199,7 @@ def counts():
 
 
 STEPS = {"nonpersons": nonpersons, "depts": depts, "benjaafar": benjaafar, "hiring": hiring,
-         "grants": grants, "identity": identity, "papers": papers, "counts": counts}
+         "grants": grants, "identity": identity, "papers": papers, "affiliation": affiliation, "counts": counts}
 
 if __name__ == "__main__":
     for name in (sys.argv[1:] or list(STEPS)):

@@ -88,7 +88,10 @@ obj ProfessorDetail {
         hiring_source_url: str = "",
         hiring_source_title: str = "",
         hiring_last_checked: str = "",
-        last_openalex_update: str = "";
+        last_openalex_update: str = "",
+        affiliation_status: str = "",
+        affiliation_note: str = "",
+        current_page_url: str = "";
 }
 
 def _flag(v: any) -> bool {
@@ -196,6 +199,9 @@ def:pub get_professor_profile(professor_id: str) -> ProfessorDetail | None {
         subfields=list(p.get("subfields") or []), anchors=anchors, papers=papers, grants=grants,
         hiring_quote=str(h.get("quote", "") or ""), hiring_source_url=str(h.get("source_url", "") or ""),
         hiring_source_title=str(h.get("source_title", "") or ""), hiring_last_checked=str(h.get("last_checked", "") or ""),
-        last_openalex_update=str(p.get("last_openalex_update", ""))
+        last_openalex_update=str(p.get("last_openalex_update", "")),
+        affiliation_status=str(p.get("affiliation_status", "") or ""),
+        affiliation_note=str(p.get("affiliation_note", "") or ""),
+        current_page_url=str(p.get("current_page_url", "") or "")
     );
 }

@@ -335,7 +335,7 @@ def recount(inst_id):
 
 _SEARCH = {"t": 0.0, "rows": [], "busy": False}
 SEARCH_FIELDS = {"name": 1, "title": 1, "department": 1, "university": 1, "subfields": 1, "fields": 1,
-                 "grant_count": 1, "has_hiring": 1, "match_status": 1, "search_text": 1}
+                 "grant_count": 1, "has_hiring": 1, "match_status": 1, "search_text": 1, "affiliation_status": 1}
 
 
 def invalidate_search():
@@ -361,6 +361,10 @@ def search(query="", university="", department="", subfield="", has_grant=False,
     dept = normalize_name(department)
     out = []
     for r in search_rows():
+        # adjunct / emeritus / moved-on people stay in the database (profile page reachable by link)
+        # but are not listed as this university's faculty
+        if r.get("affiliation_status") in ("NOT_CORE", "LIKELY_MOVED"):
+            continue
         if university and r.get("university") != university:
             continue
         if dept and dept not in normalize_name(r.get("department", "")):

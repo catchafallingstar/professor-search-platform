@@ -172,6 +172,12 @@ def:pub ProfilePage() -> JsxElement {
             </div>}
         </div>
 
+        {(p.affiliation_status == "NOT_CORE" or p.affiliation_status == "LIKELY_MOVED") and <div className="flex flex-col gap-1 rounded-lg border border-amber-300 bg-amber-50 pt-3 pb-3 pl-4 pr-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
+            <span className="font-medium">{"Not listed as current faculty here" if p.affiliation_status == "NOT_CORE" else "May no longer be at " + p.university}</span>
+            <span>{p.affiliation_note}</span>
+            {p.current_page_url and <a href={p.current_page_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 font-medium underline-offset-4 hover:underline">{"Possible current page"}<HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={2} className="size-3.5" /></a>}
+        </div>}
+
         <div className="grid gap-6 lg:grid-cols-3">
             <div className="flex flex-col gap-6 lg:col-span-2">
                 {p.match_method != "FACULTY_PAGE" and <Card className="shadow-sm">
