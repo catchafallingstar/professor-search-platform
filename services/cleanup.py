@@ -150,7 +150,10 @@ def identity():
 
 def papers():
     d = st.db()
-    rows = list(d.professors.find({"match_status": "MATCHED", "openalex_author_id": {"$nin": ["", None]}},
+    # resumable: lists already re-fetched in the last day (by an interrupted run) are skipped
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 86400))
+    rows = list(d.professors.find({"match_status": "MATCHED", "openalex_author_id": {"$nin": ["", None]},
+                                   "last_openalex_update": {"$not": {"$gte": since}}},
                                   {"openalex_author_id": 1, "name": 1}))
     log(f"papers: re-fetching {len(rows)} paper lists with filtering + de-duplication")
     for i, r in enumerate(rows):
