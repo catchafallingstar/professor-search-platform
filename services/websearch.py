@@ -3,6 +3,16 @@
 Search results are only CANDIDATES. The pipeline still fetches every page itself, checks
 the domain, extracts text and verifies the quote character-by-character.
 
+Provider: DDGS (free, no key, scrapes public search engines) is primary. LangSearch (a real
+metered API, LANGSEARCH_API_KEY) is a fallback when DDGS is capped or down.
+
+DDGS has no account or contract with the engines it scrapes - no key, no official rate limit
+either. The caps and cooldowns below are OURS, not DDGS's: hammering a public search engine
+without a key is the fast way to get the sandbox's IP rate-limited or blocked outright, which
+would break search for good, not just for a day. SEARCH_DAILY_CAP is a safety margin we chose,
+not a ceiling DDGS itself imposes - raise it and DDGS will keep working right up until a provider
+decides otherwise.
+
 Anti-bot / politeness behaviour:
   * one search at a time (process-wide lock)
   * minimum gap between searches (SEARCH_MIN_GAP, default 6 s) + random jitter (0-4 s)
@@ -39,12 +49,12 @@ class SearchUnavailable(Exception):
     """Search is cooling down / tripped / over the daily cap. Retry later; not 'no results'."""
 
 
-def _state():
-    return st.get_setting("search_state", {}) or {}
+def _state(key="search_state"):
+    return st.get_setting(key, {}) or {}
 
 
-def _save(s):
-    st.set_setting("search_state", s)
+def _save(s, key="search_state"):
+    st.set_setting(key, s)
 
 
 def status():
@@ -57,23 +67,58 @@ def status():
             "daily_cap": DAILY_CAP(), "consecutive_failures": s.get("fails", 0), "last_error": s.get("last_error", "")}
 
 
-def _fail(err):
-    s = _state()
+def _fail(err, key="search_state"):
+    s = _state(key)
     fails = int(s.get("fails", 0)) + 1
     minutes = min(60, 2 ** min(fails, 6))                 # 2,4,8,16,32,60
     s.update(fails=fails, last_error=str(err)[:200])
     if fails >= 5 or "ratelimit" in type(err).__name__.lower() or "202" in str(err) or "429" in str(err):
         s["cooldown_until"] = time.time() + minutes * 60
-    _save(s)
+    _save(s, key)
 
 
-def _ok():
-    s = _state()
+def _ok(key="search_state"):
+    s = _state(key)
     day = time.strftime("%Y-%m-%d", time.gmtime())
     if s.get("day") != day:
         s.update(day=day, used=0)
     s.update(fails=0, used=int(s.get("used", 0)) + 1, last_error="")
-    _save(s)
+    _save(s, key)
+
+
+# ---------- LangSearch: fallback provider when DDGS is capped or down ----------
+
+LANGSEARCH_DAILY_CAP = lambda: int(os.environ.get("LANGSEARCH_DAILY_CAP", "200") or 200)
+
+
+def langsearch_configured():
+    return bool(os.environ.get("LANGSEARCH_API_KEY", "").strip())
+
+
+def langsearch_status():
+    s = _state("langsearch_state")
+    now = time.time()
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    used = s.get("used", 0) if s.get("day") == day else 0
+    cool = max(0, int(s.get("cooldown_until", 0) - now))
+    return {"configured": langsearch_configured(), "available": cool == 0 and used < LANGSEARCH_DAILY_CAP(),
+            "cooldown_seconds": cool, "used_today": used, "daily_cap": LANGSEARCH_DAILY_CAP(),
+            "last_error": s.get("last_error", "")}
+
+
+def _langsearch(query, max_results):
+    # https://docs.langsearch.com/api-reference/web-search/web-search
+    import json
+    import urllib.request
+    key = os.environ.get("LANGSEARCH_API_KEY", "").strip()
+    body = json.dumps({"query": query, "freshness": "noLimit", "summary": True, "count": max_results}).encode()
+    req = urllib.request.Request("https://api.langsearch.com/v1/web-search", data=body,
+                                  headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = json.loads(r.read())
+    pages = ((data.get("data") or {}).get("webPages") or {}).get("value") or []
+    return [{"url": p.get("url") or "", "title": p.get("name") or "", "snippet": p.get("summary") or p.get("snippet") or ""}
+            for p in pages if p.get("url")]
 
 
 def _cached(q):
@@ -86,34 +131,46 @@ def _cached(q):
 
 
 def search(query, max_results=8):
-    """Returns [{"url", "title", "snippet"}]. Raises SearchUnavailable when cooling down."""
+    """Returns [{"url", "title", "snippet"}]. DDGS first; LangSearch (if configured) covers for it
+    when it is capped or erroring. Raises SearchUnavailable only when neither is usable."""
     hit = _cached(query)
     if hit is not None:
         return hit
-    stat = status()
-    if not stat["available"]:
-        raise SearchUnavailable(f"search paused ({stat['cooldown_seconds']}s cooldown, {stat['used_today']}/{stat['daily_cap']} today)")
-    from ddgs import DDGS
-    with _LOCK:
-        wait = MIN_GAP() + random.uniform(0, 4) - (time.time() - _STATE["last"])
-        if wait > 0:
-            time.sleep(wait)
+    out, provider, ddgs_error = None, "", ""
+    if status()["available"]:
+        from ddgs import DDGS
+        with _LOCK:
+            wait = MIN_GAP() + random.uniform(0, 4) - (time.time() - _STATE["last"])
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                rows = DDGS(timeout=20).text(query, max_results=max_results, region="us-en", safesearch="moderate") or []
+                _STATE["last"] = time.time()
+                _ok()
+                out = [{"url": r.get("href") or r.get("url") or "", "title": r.get("title") or "", "snippet": r.get("body") or ""}
+                       for r in rows if (r.get("href") or r.get("url"))]
+                provider = "ddgs"
+            except Exception as e:
+                _STATE["last"] = time.time()
+                if "no results" in str(e).lower():
+                    # DDGS raises when a query simply has no hits (common for "site:" queries).
+                    # That is an answer, not a failure: it must not pause search or fall back.
+                    out, provider = [], "ddgs"
+                else:
+                    _fail(e)
+                    ddgs_error = f"{type(e).__name__}: {str(e)[:150]}"
+    if out is None and langsearch_configured() and langsearch_status()["available"]:
         try:
-            rows = DDGS(timeout=20).text(query, max_results=max_results, region="us-en", safesearch="moderate") or []
+            out = _langsearch(query, max_results)
+            _ok("langsearch_state")
+            provider = "langsearch"
         except Exception as e:
-            _STATE["last"] = time.time()
-            if "no results" in str(e).lower():
-                # DDGS raises when a query simply has no hits (common for "site:" queries).
-                # That is an answer, not a failure: it must not pause search for everyone.
-                rows = []
-            else:
-                _fail(e)
-                raise SearchUnavailable(f"{type(e).__name__}: {str(e)[:150]}")
-        _STATE["last"] = time.time()
-    _ok()
-    out = [{"url": r.get("href") or r.get("url") or "", "title": r.get("title") or "", "snippet": r.get("body") or ""}
-           for r in rows if (r.get("href") or r.get("url"))]
-    st.db().search_cache.replace_one({"_id": query}, {"_id": query, "t": time.time(), "results": out}, upsert=True)
+            _fail(e, "langsearch_state")
+    if out is None:
+        stat = status()
+        reason = ddgs_error or f"paused ({stat['cooldown_seconds']}s cooldown, {stat['used_today']}/{stat['daily_cap']} today)"
+        raise SearchUnavailable(f"DDGS {reason}" + ("; LangSearch not configured" if not langsearch_configured() else "; LangSearch also unavailable"))
+    st.db().search_cache.replace_one({"_id": query}, {"_id": query, "t": time.time(), "results": out, "provider": provider}, upsert=True)
     return out
 
 
