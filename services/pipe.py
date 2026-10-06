@@ -141,6 +141,37 @@ def extract_faculty(url, dept, inst):
     return out, f"ai:{o.model_used}", None
 
 
+def more_from_profiles(url, dept, rows, max_pages=200):
+    """A listing that pages with JavaScript only shows its first screen when read. If the page is
+    paginated, read every profile page under the same folder from the sitemap instead: the name
+    comes from the page title, the title (Professor...) from the text after the name."""
+    from services import discovery
+    page = fx.fetch_page(url)
+    if not page.get("ok") or not discovery.looks_paginated(page.get("text", "")):
+        return []
+    have = {st.normalize_name(r["name"]) for r in rows}
+    have_urls = {r.get("profile_url") for r in rows}
+    extra = []
+    profiles = discovery.sitemap_profiles(url)
+    log(f"{url}: listing is paginated; reading {min(len(profiles), max_pages)} profile pages from the sitemap")
+    for purl in profiles[:max_pages]:
+        if purl in have_urls:
+            continue
+        pg = fx.fetch_page(purl)
+        if not pg.get("ok"):
+            continue
+        name = re.split(r"\s+[|\-–]\s+", (pg.get("title") or "").strip())[0].strip()
+        if not st.looks_like_person(name) or st.normalize_name(name) in have:
+            continue
+        title = title_from_page(pg.get("text", ""), name)
+        if not title:
+            continue                            # staff without a professor title are skipped
+        have.add(st.normalize_name(name))
+        extra.append({"name": name, "title": title, "department": dept, "profile_url": purl})
+        time.sleep(0.5)
+    return extra
+
+
 def crawl(inst):
     """Import professors from every known directory page of this university.
     Returns (added, per-directory report, status)."""
@@ -161,6 +192,7 @@ def crawl(inst):
             rows, via, failed = extract_faculty(url, dept, inst)
         if failed:
             flag_staff_review("FACULTY_EXTRACTION", "ALL_LLM_FALLBACKS_FAILED", inst, source_url=url, outcome=failed)
+        rows = rows + more_from_profiles(url, dept, rows)
         n = 0
         for r in rows[:MAX_PER_DEPARTMENT]:
             if _NOT_CORE_TITLE.search(r.get("title") or ""):

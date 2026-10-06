@@ -166,6 +166,47 @@ def sitemap_candidates(base, dom, limit=4000):
     return list(dict.fromkeys(urls))
 
 
+def sitemap_profiles(directory_url, limit=400):
+    """Profile pages that live under a directory page's folder, taken from the site's sitemaps.
+    For listings that load names with JavaScript in pages ("1 2 3 ... 12 Next"), where reading the
+    page only ever returns the first screen (e.g. emich.edu/coe/faculty-staff/index.php)."""
+    p = urllib.parse.urlparse(directory_url)
+    folder = p.path.rsplit("/", 1)[0] + "/"
+    dom = domain_of(f"{p.scheme}://{p.netloc}")
+    base = f"{p.scheme}://{p.netloc}"
+    maps = []
+    try:
+        for line in fx.fetch_page(base + "/robots.txt").get("text", "").splitlines():
+            if line.lower().startswith("sitemap:"):
+                maps.append(line.split(":", 1)[1].strip())
+    except Exception:
+        pass
+    maps += [base + "/sitemap.xml"]
+    out, seen = [], set()
+    for m in list(dict.fromkeys(maps))[:6]:
+        if m in seen:
+            continue
+        seen.add(m)
+        text = ""
+        try:
+            text = _get(m)
+        except Exception:
+            text = fx.fetch_page(m).get("text", "")          # bot-protected sites: via the reader
+        for loc in re.findall(r"https?://[^\s<>\"')\]]+", text):
+            lp = urllib.parse.urlparse(loc)
+            if (on_domain(loc, dom) and lp.path.startswith(folder) and lp.path != p.path
+                    and not lp.path.endswith(("index.php", "index.html", "/")) and lp.path.count("/") == folder.count("/")):
+                out.append(loc.split("#")[0])
+    return list(dict.fromkeys(out))[:limit]
+
+
+def looks_paginated(page_text):
+    """True when a listing shows more pages than were read: numbered page links / "Next page"."""
+    t = page_text or ""
+    nums = [int(n) for n in re.findall(r"\[(\d{1,3})\]\([^)]*\)", t)]
+    return bool(re.search(r"\[next( page)?\]", t, re.I)) or (len(nums) >= 3 and max(nums) >= 3)
+
+
 def validate(url, dept=""):
     """Fetch and check a candidate. Returns (ok, rows, info)."""
     if is_news_like(url):
@@ -180,7 +221,10 @@ def _dept_label(text, url):
     t = re.sub(r"\s+", " ", text or "").strip()
     if t and t.lower() not in ("faculty", "people", "directory", "our faculty", "faculty directory", "faculty & staff"):
         return t[:80]
-    parts = [p for p in urllib.parse.urlparse(url).path.split("/") if p and p.lower() not in ("people", "faculty", "directory")]
+    # path words that name the page, not the department ("index.php", "faculty-staff")
+    skip = ("people", "faculty", "directory", "staff", "faculty-staff", "faculty-and-staff", "our-faculty", "listing", "listings")
+    parts = [re.sub(r"\.\w+$", "", p) for p in urllib.parse.urlparse(url).path.split("/")]
+    parts = [p for p in parts if p and p.lower() not in skip and p.lower() not in ("index", "default", "home")]
     host = urllib.parse.urlparse(url).netloc.split(".")[0]
     label = (parts[-1] if parts else host).replace("-", " ").replace("_", " ")
     return label.title()[:80]
