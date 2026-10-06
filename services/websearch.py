@@ -17,10 +17,11 @@ Anti-bot / politeness behaviour:
   * one search at a time (process-wide lock)
   * minimum gap between searches (SEARCH_MIN_GAP, default 6 s) + random jitter (0-4 s)
   * results cached for 30 days (MongoDB "search_cache"), so maintenance runs don't re-search
-  * on a rate limit: exponential cooldown 2 -> 4 -> 8 ... up to 60 min (state kept in MongoDB)
-  * circuit breaker: after 5 consecutive failures the search is "tripped" for the cooldown;
-    callers get status RATE_LIMITED and the professor is re-checked later (never "no signal")
-  * a daily cap (SEARCH_DAILY_CAP, default 400 queries) so the pipeline stays a polite guest
+  * on failure: DDGS is retried up to SEARCH_RETRIES (default 3) times in the same call; if all of
+    them fail, DDGS rests for a fixed SEARCH_COOLDOWN_MINUTES (default 20) while LangSearch covers,
+    then is tried fresh again - repeating indefinitely, never permanently giving up on DDGS
+  * a daily cap (SEARCH_DAILY_CAP) if you want one; default/unset/0 = uncapped - DDGS has no
+    real daily limit of its own (see above), so the retry+cooldown behaviour is the real guardrail
 """
 
 import os
@@ -34,7 +35,9 @@ from services import store as st
 _LOCK = threading.Lock()
 _STATE = {"last": 0.0}
 MIN_GAP = lambda: float(os.environ.get("SEARCH_MIN_GAP", "6") or 6)
-DAILY_CAP = lambda: int(os.environ.get("SEARCH_DAILY_CAP", "400") or 400)
+DAILY_CAP = lambda: int(os.environ.get("SEARCH_DAILY_CAP", "0") or 0)       # 0 = uncapped (the default)
+RETRIES = lambda: max(1, int(os.environ.get("SEARCH_RETRIES", "3") or 3))
+COOLDOWN_MINUTES = lambda: float(os.environ.get("SEARCH_COOLDOWN_MINUTES", "20") or 20)
 CACHE_DAYS = 30
 
 HIGH = ("/openings", "/join", "/join-us", "/positions", "/opportunities", "/prospective", "/students", "/lab", "/people", "/research", "/group", "/team")
@@ -63,17 +66,17 @@ def status():
     day = time.strftime("%Y-%m-%d", time.gmtime())
     used = s.get("used", 0) if s.get("day") == day else 0
     cool = max(0, int(s.get("cooldown_until", 0) - now))
-    return {"available": cool == 0 and used < DAILY_CAP(), "cooldown_seconds": cool, "used_today": used,
-            "daily_cap": DAILY_CAP(), "consecutive_failures": s.get("fails", 0), "last_error": s.get("last_error", "")}
+    cap = DAILY_CAP()
+    return {"available": cool == 0 and (cap <= 0 or used < cap), "cooldown_seconds": cool, "used_today": used,
+            "daily_cap": cap, "consecutive_failures": s.get("fails", 0), "last_error": s.get("last_error", "")}
 
 
 def _fail(err, key="search_state"):
+    # all SEARCH_RETRIES attempts in this call failed: rest for a fixed window (not exponential -
+    # the point is "try again soon", not "give up for longer and longer").
     s = _state(key)
-    fails = int(s.get("fails", 0)) + 1
-    minutes = min(60, 2 ** min(fails, 6))                 # 2,4,8,16,32,60
-    s.update(fails=fails, last_error=str(err)[:200])
-    if fails >= 5 or "ratelimit" in type(err).__name__.lower() or "202" in str(err) or "429" in str(err):
-        s["cooldown_until"] = time.time() + minutes * 60
+    s.update(fails=int(s.get("fails", 0)) + 1, last_error=str(err)[:200],
+              cooldown_until=time.time() + COOLDOWN_MINUTES() * 60)
     _save(s, key)
 
 
@@ -139,26 +142,34 @@ def search(query, max_results=8):
     out, provider, ddgs_error = None, "", ""
     if status()["available"]:
         from ddgs import DDGS
-        with _LOCK:
-            wait = MIN_GAP() + random.uniform(0, 4) - (time.time() - _STATE["last"])
-            if wait > 0:
-                time.sleep(wait)
-            try:
-                rows = DDGS(timeout=20).text(query, max_results=max_results, region="us-en", safesearch="moderate") or []
-                _STATE["last"] = time.time()
-                _ok()
-                out = [{"url": r.get("href") or r.get("url") or "", "title": r.get("title") or "", "snippet": r.get("body") or ""}
-                       for r in rows if (r.get("href") or r.get("url"))]
-                provider = "ddgs"
-            except Exception as e:
-                _STATE["last"] = time.time()
-                if "no results" in str(e).lower():
-                    # DDGS raises when a query simply has no hits (common for "site:" queries).
-                    # That is an answer, not a failure: it must not pause search or fall back.
-                    out, provider = [], "ddgs"
-                else:
-                    _fail(e)
-                    ddgs_error = f"{type(e).__name__}: {str(e)[:150]}"
+        last_exc = None
+        for attempt in range(RETRIES()):
+            with _LOCK:
+                wait = MIN_GAP() + random.uniform(0, 4) - (time.time() - _STATE["last"])
+                if wait > 0:
+                    time.sleep(wait)
+                try:
+                    rows = DDGS(timeout=20).text(query, max_results=max_results, region="us-en", safesearch="moderate") or []
+                    _STATE["last"] = time.time()
+                    _ok()
+                    out = [{"url": r.get("href") or r.get("url") or "", "title": r.get("title") or "", "snippet": r.get("body") or ""}
+                           for r in rows if (r.get("href") or r.get("url"))]
+                    provider = "ddgs"
+                except Exception as e:
+                    _STATE["last"] = time.time()
+                    if "no results" in str(e).lower():
+                        # DDGS raises when a query simply has no hits (common for "site:" queries).
+                        # That is an answer, not a failure: it must not pause search or fall back.
+                        out, provider = [], "ddgs"
+                    else:
+                        last_exc = e
+            if out is not None:
+                break
+        if out is None and last_exc is not None:
+            # every retry in this call failed: rest DDGS for COOLDOWN_MINUTES (LangSearch covers
+            # it below), then come back and try it fresh again next call - repeats indefinitely
+            _fail(last_exc)
+            ddgs_error = f"{type(last_exc).__name__}: {str(last_exc)[:150]} (after {RETRIES()} tries)"
     if out is None and langsearch_configured() and langsearch_status()["available"]:
         try:
             out = _langsearch(query, max_results)
@@ -238,7 +249,7 @@ def hiring_queries(name, domain):
 def find_hiring_candidates(name, domain, max_queries=3, max_urls=5):
     """Run a few controlled queries (stop early once enough candidates) -> ranked URLs."""
     # one broad query usually finds the lab / personal site; stop as soon as one is ranked in
-    # (each extra query costs search budget: ~400/day shared by the whole pipeline)
+    # (each extra query is still politeness-throttled by MIN_GAP/retries, even uncapped)
     found = []
     last = (_plain(name).split() or [""])[-1].lower()
     for q in hiring_queries(name, domain)[:max_queries]:
