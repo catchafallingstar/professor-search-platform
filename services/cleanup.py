@@ -510,6 +510,19 @@ def affiliation():
     log(f"affiliation: done {counts_}")
 
 
+def upgrade_safe():
+    """Apply the local/idempotent repairs for the current schema/identity upgrade.
+
+    This does not call OpenAlex, Scholar, DDGS or an LLM itself. It only repairs/reopens MongoDB
+    rows; the normal background pipeline then reprocesses them with the new rules.
+    """
+    for fn in (names, directory_profiles, retry_identity, profile_rescan,
+               author_duplicates, states, nonpersons, depts, paper_orphans):
+        fn()
+    counts()
+    log("upgrade_safe: local data repairs complete; background processing can resume")
+
+
 def counts():
     for inst in st.db().institutions.find({}, {"_id": 1}):
         st.recount(inst["_id"])
@@ -517,7 +530,7 @@ def counts():
     log("counts: every university recomputed from its professor rows")
 
 
-STEPS = {"names": names, "directory_profiles": directory_profiles,
+STEPS = {"upgrade_safe": upgrade_safe, "names": names, "directory_profiles": directory_profiles,
          "retry_identity": retry_identity, "profile_rescan": profile_rescan,
          "author_duplicates": author_duplicates, "states": states, "nonpersons": nonpersons,
          "depts": depts, "benjaafar": benjaafar, "hiring": hiring, "grants": grants,
