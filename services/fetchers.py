@@ -213,6 +213,12 @@ def restore_then_resume():
                 if st.count_institutions() == 0:
                     year, n, new = pipe.load_ipeds()
                     pipe.log(f"Loaded {n} research universities from IPEDS {year}.")
+                try:
+                    removed = st.prune_transient()
+                    if any(removed.values()):
+                        print(f"[store] pruned rebuildable records: {removed}")
+                except Exception as e:
+                    print(f"[store] transient-data prune skipped: {str(e)[:120]}")
                 print(f"[store] MongoDB directory: {st.overview()}")
                 autostart = os.environ.get("PIPELINE_AUTOSTART", "1").strip() not in ("0", "false", "no")
                 if autostart and st.get_setting("worker_running", True) is not False:
