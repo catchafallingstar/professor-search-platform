@@ -27,6 +27,7 @@ import urllib.request
 
 from services import fetchers as fx
 from services import store as st
+from services import name_utils as nu
 
 MIN_AGREEING_PAPERS = 2
 TITLE_RE = re.compile(r"\[([^\]]{12,300})\]\((https?://scholar\.google\.[^)]*view_op=view_citation[^)]*)\)")
@@ -136,7 +137,7 @@ def _ids_from_search(p, inst):
     """DDGS results: the professor's own profile, or a co-author link to it on another profile."""
     from services import websearch as ws
     uni = re.split(r"[-,]", inst.get("name", ""))[0].strip()
-    rows = ws.search(f'"{p["name"]}" {uni} site:scholar.google.com', 10)   # SearchUnavailable propagates
+    rows = ws.search(f'"{nu.clean_person_name(p["name"])}" {uni} site:scholar.google.com', 10)   # SearchUnavailable propagates
     last = st.normalize_name(p["name"]).split()[-1]
     own, via_coauthor = [], []
     for r in rows:
@@ -158,6 +159,26 @@ def _coauthor_link(host_user, p, names_match):
         if _names_ok(names_match, p["name"], htmllib.unescape(name)):
             return uid
     return ""
+
+
+def find_linked_profile(p, inst, domain, names_match):
+    """Only Scholar profiles explicitly linked by the official faculty/personal/lab page.
+
+    Returns (profile, FOUND|NONE|UNREADABLE|NOT_VERIFIED).  A linked profile is stronger than
+    a web-search guess and is tried before OpenAlex name matching.
+    """
+    ids = _ids_from_pages(p)
+    if not ids:
+        return None, "NONE"
+    unreadable = False
+    for uid in ids:
+        prof = read_profile(uid)
+        if prof is None:
+            unreadable = True
+            continue
+        if _verified(prof, p, inst, domain, names_match):
+            return prof, "FOUND"
+    return None, ("UNREADABLE" if unreadable else "NOT_VERIFIED")
 
 
 def find_profile(p, inst, domain, names_match):
@@ -195,16 +216,8 @@ def paper_titles(profile_url, limit=8):
 
 # ---------- the step ----------
 
-def match_via_scholar(p, inst, inst_oid, names_match):
-    """Returns (fields to store, reason if no identity). A verified Scholar profile is an identity
-    on its own: if OpenAlex agrees we store the OpenAlex author, otherwise the Scholar papers."""
-    from services import discovery
-    domain = discovery.domain_of(inst.get("official_website") or "")
-    prof, status = find_profile(p, inst, domain, names_match)
-    if status == "SEARCH_UNAVAILABLE":
-        return {}, ""                                # web search cooling down: retried later
-    if prof is None:
-        return {"scholar_checked": st.now_iso()}, "NO_SCHOLAR_PROFILE"
+def _fields_from_profile(p, inst, prof, names_match):
+    """Convert one already-verified Scholar profile to Professor Atlas fields."""
     base = {"scholar_checked": st.now_iso(), "scholar_url": prof["url"], "scholar_id": prof["user"],
             "scholar_affiliation": prof["affiliation"], "personal_url": p.get("personal_url") or prof.get("homepage", "")}
     votes, evidence = {}, {}
@@ -232,8 +245,38 @@ def match_via_scholar(p, inst, inst_oid, names_match):
             return dict(base, openalex_author_id=best, match_status="MATCHED", match_method="GOOGLE_SCHOLAR",
                         match_note=f"Google Scholar profile verified ({prof['affiliation'] or prof['email_domain']}); "
                                    f"{votes[best]} of its papers belong to OpenAlex author {best} "
-                                   f"(e.g. \"{evidence[best][0][:90]}\")."), ""
-    # OpenAlex does not line up (or lists an old affiliation): the verified Scholar profile is the source
+                                   f"(e.g. \"{evidence[best][0][:90]}\").")
     return dict(base, scholar_papers=prof["papers"], match_status="SCHOLAR", match_method="GOOGLE_SCHOLAR",
                 match_note=f"Google Scholar profile verified ({prof['affiliation'] or 'verified email at ' + prof['email_domain']}); "
-                           f"{len(prof['papers'])} publications taken from it."), ""
+                           f"{len(prof['papers'])} publications taken from it.")
+
+
+def match_via_linked_scholar(p, inst, names_match):
+    """Try only Scholar links supplied by the professor's own official pages.
+
+    If such a link exists but cannot be read now, return RETRY_LINKED instead of silently
+    falling through to a weaker identity source.
+    """
+    from services import discovery
+    domain = discovery.domain_of(inst.get("official_website") or "")
+    prof, status = find_linked_profile(p, inst, domain, names_match)
+    if status == "FOUND":
+        return _fields_from_profile(p, inst, prof, names_match), ""
+    if status == "UNREADABLE":
+        return {}, "RETRY_LINKED"
+    if status == "NOT_VERIFIED":
+        return {"scholar_checked": st.now_iso()}, "LINKED_NOT_VERIFIED"
+    return {}, "NO_LINK"
+
+
+def match_via_scholar(p, inst, inst_oid, names_match):
+    """Returns (fields to store, reason if no identity). A verified Scholar profile is an identity
+    on its own: if OpenAlex agrees we store the OpenAlex author, otherwise the Scholar papers."""
+    from services import discovery
+    domain = discovery.domain_of(inst.get("official_website") or "")
+    prof, status = find_profile(p, inst, domain, names_match)
+    if status == "SEARCH_UNAVAILABLE":
+        return {}, ""                                # web search cooling down: retried later
+    if prof is None:
+        return {"scholar_checked": st.now_iso()}, "NO_SCHOLAR_PROFILE"
+    return _fields_from_profile(p, inst, prof, names_match), ""
