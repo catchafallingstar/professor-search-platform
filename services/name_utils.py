@@ -120,7 +120,13 @@ def name_tokens(name):
 
 
 def normalize_person_name(name):
+    """Comparison key: credentials and generation suffixes are ignored."""
     return " ".join(name_tokens(name))
+
+
+def storage_key(name):
+    """Stable professor-ID key: credentials are removed but Jr./III/etc. stay distinct."""
+    return normalize_text(clean_person_name(name))
 
 
 def _token_compatible(a, b):
