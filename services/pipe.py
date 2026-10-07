@@ -1592,6 +1592,11 @@ def enrich_profile(p, inst):
     signals = fpg.identity_signals(text, page.get("url") or p["faculty_url"], p.get("name", ""))
     out = {"profile_extracted": True, "profile_full_scan_at": st.now_iso()}
 
+    dept_hint = fpg.department_hint(text, p.get("name", ""))
+    current_dept = " ".join((p.get("department") or "").split())
+    if dept_hint and (not st.clean_department(current_dept) or len(current_dept) <= 5):
+        out["department"] = dept_hint
+
     if signals.get("scholar_ids"):
         out["scholar_id"] = signals["scholar_ids"][0]
         out["scholar_url"] = (signals.get("scholar_urls") or [""])[0]
