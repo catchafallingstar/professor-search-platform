@@ -66,6 +66,9 @@ def clean_person_name(name):
     s = " ".join((name or "").split()).strip(" ,;:-|")
     if not s:
         return ""
+    # Directory cards sometimes expose social-icon link text as "Dr. Jane Smith's X".
+    # The platform label is not part of the person's name.
+    s = re.sub(r"(?i)['’]s\s+(?:x|twitter|linkedin|facebook|instagram)$", "", s).strip()
 
     words = s.split()
     if len(words) >= 3 and words[0].lower() in HONORIFICS:
