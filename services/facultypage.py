@@ -101,7 +101,9 @@ def grants(text, limit=10):
 HOME_WORDS = re.compile(r"\b(personal (web)?site|personal page|homepage|home page|website|lab(oratory)? (site|page|website)|research group|my site|cv|curriculum vitae)\b", re.I)
 SKIP_HOSTS = ("twitter.com", "x.com", "facebook.com", "instagram.com", "linkedin.com", "youtube.com", "scholar.google")
 SCHOLAR_LINK = re.compile(r"https?://scholar\.google\.[^\s)\]'\"<>]+", re.I)
-ORCID_RE = re.compile(r"\b(?:https?://orcid\.org/)?(\d{4}-\d{4}-\d{4}-[\dX]{4})\b", re.I)
+ORCID_RE = re.compile(r"\b(\d{4}-\d{4}-\d{4}-[\dX]{4})\b", re.I)
+ORCID_LINK_RE = re.compile(r"https?://orcid\.org/(\d{4}-\d{4}-\d{4}-[\dX]{4})\b", re.I)
+ORCID_LABEL_RE = re.compile(r"(?i)\bORCID\b[^\n]{0,100}?(\d{4}-\d{4}-\d{4}-[\dX]{4})\b")
 PUB_LINK_WORDS = re.compile(r"\b(publications?|papers?|selected works|bibliography|inspire(?:hep)?|research output)\b", re.I)
 
 
@@ -164,11 +166,22 @@ def identity_signals(text, base_url="", name=""):
         if uid and uid not in scholar_ids:
             scholar_ids.append(uid)
             scholar_urls.append(url)
-    om = ORCID_RE.search(text or "")
+    # ORCID is deliberately stricter than Scholar/publication discovery. A rendered faculty
+    # page can contain hidden cards, related people, or site-wide metadata for other faculty. The
+    # old "first 0000-.... anywhere on the page" rule contaminated identities (two unrelated
+    # professors could inherit the same ORCID). Accept only an explicit orcid.org link or an
+    # ORCID-labelled id. enrich_profile() then verifies that id's ORCID name before storing it.
+    orcids = []
+    for rx in (ORCID_LINK_RE, ORCID_LABEL_RE):
+        for om in rx.finditer(text or ""):
+            oid = om.group(1).upper()
+            if oid not in orcids:
+                orcids.append(oid)
     return {
         "scholar_ids": scholar_ids,
         "scholar_urls": scholar_urls,
-        "orcid": om.group(1) if om else "",
+        "orcid": orcids[0] if len(orcids) == 1 else "",
+        "orcid_candidates": orcids,
         "publication_pages": publication_pages(text),
         "linked_pages": linked_pages(text, name),
         "anchors": publications(text, limit=8),
