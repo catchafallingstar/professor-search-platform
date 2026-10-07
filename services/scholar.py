@@ -188,23 +188,48 @@ def find_linked_profile(p, inst, domain, names_match):
 
 
 def find_profile(p, inst, domain, names_match):
-    """Returns (verified profile dict or None, status FOUND / NONE / SEARCH_UNAVAILABLE)."""
+    """Return the best verified Scholar profile.
+
+    Priority is strict:
+      1. Scholar profile explicitly linked by the official faculty/personal/lab page.
+      2. Only when no linked profile verifies, use web search / co-author discovery.
+
+    Status is FOUND / NONE / SEARCH_UNAVAILABLE / LINKED_UNREADABLE.  A linked profile that
+    temporarily cannot be read is never silently replaced by a weaker identity source.
+    """
     from services import websearch as ws
     tried = set()
-    candidates = _ids_from_pages(p)
+    linked = _ids_from_pages(p)
+    linked_unreadable = False
+
+    # Official-page Scholar links are the strongest and cheapest lead. Do not spend a DDGS query
+    # before trying them.
+    for uid in linked:
+        if uid in tried:
+            continue
+        tried.add(uid)
+        prof = read_profile(uid)
+        if prof is None:
+            linked_unreadable = True
+            continue
+        if _verified(prof, p, inst, domain, names_match):
+            return prof, "FOUND"
+
     try:
         own, coauthor_hosts = _ids_from_search(p, inst)
     except ws.SearchUnavailable:
-        if not candidates:
-            return None, "SEARCH_UNAVAILABLE"
-        own, coauthor_hosts = [], []
-    for uid in candidates + own:
+        if linked_unreadable:
+            return None, "LINKED_UNREADABLE"
+        return None, "SEARCH_UNAVAILABLE"
+
+    for uid in own:
         if uid in tried:
             continue
         tried.add(uid)
         prof = read_profile(uid)
         if _verified(prof, p, inst, domain, names_match):
             return prof, "FOUND"
+
     for host in coauthor_hosts[:2]:
         uid = _coauthor_link(host, p, names_match)
         if uid and uid not in tried:
@@ -212,6 +237,9 @@ def find_profile(p, inst, domain, names_match):
             prof = read_profile(uid)
             if _verified(prof, p, inst, domain, names_match):
                 return prof, "FOUND"
+
+    if linked_unreadable:
+        return None, "LINKED_UNREADABLE"
     return None, "NONE"
 
 
@@ -281,8 +309,8 @@ def match_via_scholar(p, inst, inst_oid, names_match):
     from services import discovery
     domain = discovery.domain_of(inst.get("official_website") or "")
     prof, status = find_profile(p, inst, domain, names_match)
-    if status == "SEARCH_UNAVAILABLE":
-        return {}, ""                                # web search cooling down: retried later
+    if status in ("SEARCH_UNAVAILABLE", "LINKED_UNREADABLE"):
+        return {}, ""                                # retry later; do not fall through to weaker evidence
     if prof is None:
         return {"scholar_checked": st.now_iso()}, "NO_SCHOLAR_PROFILE"
     return _fields_from_profile(p, inst, prof, names_match), ""
