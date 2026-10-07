@@ -141,7 +141,10 @@ def extract_faculty(url, dept, inst):
         return [], "ai_retry_later", o
     if o.status == "STAFF_REVIEW":
         return [], "ai_failed", o
-    out = [{"name": r.name.strip(), "title": r.title or "Professor", "department": dept, "profile_url": url}
+    # AI parsed a DIRECTORY page, not an individual profile. Never save the directory URL as the
+    # professor's faculty_url: doing so lets another person's Scholar/ORCID/publications on the
+    # shared page contaminate identity. Individual profile discovery may fill this later.
+    out = [{"name": r.name.strip(), "title": r.title or "Professor", "department": dept, "profile_url": ""}
            for r in (o.value or []) if "professor" in (r.title or "").lower()]
     return out, f"ai:{o.model_used}", None
 
