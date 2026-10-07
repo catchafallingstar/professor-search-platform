@@ -424,6 +424,22 @@ def set_setting(key, value):
     db().settings.update_one({"_id": key}, {"$set": {"value": value, "updated_at": now_iso()}}, upsert=True)
 
 
+def prune_transient(days_search=30, days_jobs=14, days_review=30):
+    """Delete rebuildable operational records so Atlas Free storage does not grow forever.
+
+    Core data (institutions, professors, papers, grants, accounts) is never touched.
+    """
+    d = db()
+    now = time.time()
+    search_cut = now - int(days_search) * 86400
+    job_cut = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - int(days_jobs) * 86400))
+    review_cut = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - int(days_review) * 86400))
+    a = d.search_cache.delete_many({"t": {"$lt": search_cut}}).deleted_count
+    b = d.jobs.delete_many({"status": {"$in": ["DONE", "FAILED"]}, "finished_at": {"$lt": job_cut}}).deleted_count
+    c = d.staff_review.delete_many({"resolved": True, "resolved_at": {"$lt": review_cut}}).deleted_count
+    return {"search_cache": int(a), "jobs": int(b), "staff_review": int(c)}
+
+
 def overview():
     d = db()
     return {
