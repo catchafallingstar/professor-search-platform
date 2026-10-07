@@ -1653,7 +1653,7 @@ def enrich_profile(p, inst):
     if o.status == "STAFF_REVIEW":
         # If the official page already gave us strong identity evidence, the optional AI pass is
         # not a reason to block this professor or send a human a noisy review item.
-        if not (out.get("scholar_id") or out.get("orcid") or out.get("anchors")):
+        if not (out.get("scholar_link_candidates") or out.get("orcid") or out.get("anchors")):
             flag_staff_review("PROFILE_EXTRACTION", "ALL_LLM_FALLBACKS_FAILED", inst, p, p["faculty_url"], o)
         return out
 
@@ -1665,8 +1665,22 @@ def enrich_profile(p, inst):
         out["lab_url"] = info.lab_url
     if info.personal_url and not p.get("personal_url") and info.personal_url.split("//")[-1][:40] in text:
         out["personal_url"] = info.personal_url
-    if info.orcid and not (p.get("orcid") or out.get("orcid")) and fx.short_id(info.orcid) in text:
-        out["orcid"] = fx.short_id(info.orcid)
+    if info.orcid and not (p.get("orcid") or out.get("orcid")):
+        # AI may point at an ORCID, but it is accepted only when the deterministic full-page
+        # scanner found the same explicit ORCID signal and ORCID's public name record verifies it.
+        candidate = fx.short_id(info.orcid).upper()
+        if candidate in (signals.get("orcid_candidates") or []):
+            try:
+                from services import orcid as orcid_service
+                verdict = orcid_service.linked_id_matches_name(candidate, p, names_match)
+            except Exception:
+                verdict = None
+            if verdict is True:
+                out["orcid"] = candidate
+                out["orcid_source"] = "FACULTY_PAGE_AI_VERIFIED"
+            elif verdict is False:
+                out["rejected_orcid"] = candidate
+                out["orcid_reject_note"] = "AI-suggested ORCID did not match professor name in ORCID."
     if not out.get("anchors"):
         anchors = [{"title": pub.title, "doi": pub.doi, "publication_year": pub.year}
                    for pub in (info.publications or [])[:8]
