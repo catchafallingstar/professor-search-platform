@@ -194,10 +194,10 @@ def repair_name(name):
                 return " ".join(words[:k])
     return n
 _HEADING_DEPTS = re.compile(
-    r"^(?:index\.(?:php|html?)|faculty(?:\s*(?:and|&)\s*staff)?(?:\s*directory)?|faculty staff|"
+    r"^(?:index\.(?:php|html?)|faculty\.(?:php|html?)|faculty(?:\s*(?:and|&)\s*staff)?(?:\s*directory)?|faculty staff|"
     r"faculty and staff(?: directory)?|faculty & staff(?: directory)?|meet (?:our|the) faculty|"
     r"our (?:faculty|team|people)|all faculty|find faculty|faculty by department|faculty at .+|"
-    r"additional faculty|people|who we are|about(?: us)?|research(?: highlights)?|faculty research|"
+    r"additional faculty|people(?: directory)?|find faculty|who we are|about(?: us)?|all|group|apply|www|research(?: highlights)?|faculty research|"
     r"faculty (?:and|&) research|deans? awards?|faculty bookshelf|directory|home|news|in the media|"
     r"academic seminars)$", re.I)
 
