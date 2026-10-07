@@ -260,6 +260,38 @@ def names_match(prof_name, candidate):
     return a[0] == b[-1] and a[-1] == b[0]
 
 
+def names_match_strict(prof_name, candidate):
+    """High-precision name comparison for weak identity fallbacks.
+
+    Unlike names_match(), this never treats two different given names that merely share an
+    initial as the same person (e.g. Licheng Liu vs Lihong Liu). Middle initials may be absent
+    on one side, and two-token reversed forms are allowed.
+    """
+    a = st.normalize_name(prof_name).split()
+    b = st.normalize_name(candidate).split()
+    if len(a) < 2 or len(b) < 2:
+        return False
+    if a == b:
+        return True
+    if len(a) == 2 and len(b) == 2 and a[0] == b[1] and a[1] == b[0]:
+        return True
+    if a[0] != b[0] or a[-1] != b[-1]:
+        return False
+    amid, bmid = a[1:-1], b[1:-1]
+    if not amid or not bmid:
+        return True
+    # When both sides carry middle names/initials, each shared position must be compatible.
+    for x, y in zip(amid, bmid):
+        if x == y:
+            continue
+        if len(x) == 1 and y.startswith(x):
+            continue
+        if len(y) == 1 and x.startswith(y):
+            continue
+        return False
+    return True
+
+
 def _sid(x):
     return fx.short_id(x or "")
 
@@ -308,34 +340,62 @@ def match(p, inst_oid):
                             "match_status": "MATCHED", "match_method": "PAPER_" + method,
                             "match_note": f"Matched via faculty-page publication \"{anc.get('title', '')}\"; "
                                           + ("institution verified." if at_inst else "institution not verified on that paper.")}
-    # C: name + institution; accept only one clear author
+    # C: name + CURRENT institution. This is intentionally strict because the MongoDB audit
+    # found that loose first-initial matching contaminated papers for same-surname researchers.
     if not inst_oid:
         return {"match_status": "UNRESOLVED", "match_note": "Institution not found in OpenAlex."}
-    cands = [a for a in fx.search_authors(p["name"], inst_oid) if names_match(p["name"], a.get("display_name") or "")]
-    note = "Matched on name + institution (one clear OpenAlex author)."
-    if not cands:
-        cands = [a for a in fx.search_authors(p["name"], "") if names_match(p["name"], a.get("display_name") or "") and _affiliated(a, inst_oid)]
-        note = "Matched on name + institution in OpenAlex affiliation history."
+    anchors_present = bool(p.get("anchors"))
+    current = [a for a in fx.search_authors(p["name"], inst_oid)
+               if names_match_strict(p["name"], a.get("display_name") or "")]
+    cands = current
+    note = "Matched on exact-compatible name + current institution (one clear OpenAlex author)."
+
+    # ORCID from the university profile is strong enough to disambiguate current/history results.
+    orcid_match = False
     if p.get("orcid"):
-        by = [a for a in cands if _sid(a.get("orcid")) == p["orcid"]]
+        pool = list(cands)
+        if not pool:
+            pool = [a for a in fx.search_authors(p["name"], "")
+                    if names_match_strict(p["name"], a.get("display_name") or "")]
+        by = [a for a in pool if _sid(a.get("orcid")) == p["orcid"]]
         if len(by) == 1:
-            cands = by
+            cands, orcid_match = by, True
+            note = "Matched by faculty-page ORCID + compatible name."
+
+    # Historical affiliation is useful evidence for the identity ladder, but not enough to
+    # auto-attach papers by itself. People move, and this was a source of stale-institution errors.
+    if not cands and not orcid_match:
+        history = [a for a in fx.search_authors(p["name"], "")
+                   if names_match_strict(p["name"], a.get("display_name") or "") and _affiliated(a, inst_oid)]
+        if history:
+            return {"match_status": "UNRESOLVED", "match_method": "",
+                    "match_note": f"{len(history)} compatible OpenAlex author(s) have historical affiliation with this institution; "
+                                  "not auto-matched without a current affiliation, ORCID, or verified publication."}
+
+    # If the faculty page supplied publications but none led to this candidate, don't silently
+    # override that contradictory evidence with the weaker name+institution fallback.
+    if anchors_present and not orcid_match:
+        return {"match_status": "UNRESOLVED", "match_method": "",
+                "match_note": "Faculty-page publication anchors were available but did not verify an OpenAlex author; "
+                              "name + institution fallback was intentionally not accepted."}
+
     if len(cands) > 1:
         cands.sort(key=lambda a: int(a.get("works_count") or 0), reverse=True)
         top = int(cands[0].get("works_count") or 0)
         rest = sum(int(a.get("works_count") or 0) for a in cands[1:])
+        # Dominance is only a tie-break among exact-compatible names at the CURRENT institution.
         if top >= 20 and top >= 5 * max(rest, 1):
             cands = cands[:1]
-            note = "Matched on name + institution (dominant OpenAlex profile; smaller duplicates ignored)."
+            note = "Matched on exact-compatible name + current institution (dominant duplicate OpenAlex profile)."
     if len(cands) == 1:
-        if p.get("anchors"):
-            # the faculty page listed papers but none resolved to this author: weaker evidence, say so
-            note += " Faculty-page papers were checked first but none were found under this author in OpenAlex."
-        return {"openalex_author_id": _sid(cands[0].get("id")), "orcid": p.get("orcid") or _sid(cands[0].get("orcid")),
-                "match_status": "MATCHED", "match_method": "NAME_INSTITUTION", "match_note": note}
+        return {"openalex_author_id": _sid(cands[0].get("id")),
+                "orcid": p.get("orcid") or _sid(cands[0].get("orcid")),
+                "match_status": "MATCHED",
+                "match_method": "ORCID_PROFILE" if orcid_match else "NAME_INSTITUTION",
+                "match_note": note}
     return {"match_status": "UNRESOLVED", "match_method": "",
-            "match_note": "No OpenAlex author for name + institution." if not cands
-            else f"Ambiguous: {len(cands)} OpenAlex authors with this name at the institution."}
+            "match_note": "No exact-compatible OpenAlex author at the current institution." if not cands
+            else f"Ambiguous: {len(cands)} exact-compatible OpenAlex authors at the institution."}
 
 
 # ---------- identity sanity gate (runs after every OpenAlex match) ----------
@@ -417,7 +477,7 @@ def identity_check(p, author_id):
                            f"the author at {names}; likely a different person with the same name.")
     for other in st.db().professors.find({"openalex_author_id": author_id, "_id": {"$ne": p["id"]}},
                                          {"name": 1, "institution_id": 1}):
-        if not names_match(p["name"], other.get("name", "")):
+        if not names_match_strict(p["name"], other.get("name", "")):
             return False, f"OpenAlex author {author_id} is already linked to {other.get('name')} (a different person)."
     return True, ""
 
