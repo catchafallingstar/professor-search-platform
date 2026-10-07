@@ -99,6 +99,65 @@ def grants(text, limit=10):
 
 HOME_WORDS = re.compile(r"\b(personal (web)?site|personal page|homepage|home page|website|lab(oratory)? (site|page|website)|research group|my site|cv|curriculum vitae)\b", re.I)
 SKIP_HOSTS = ("twitter.com", "x.com", "facebook.com", "instagram.com", "linkedin.com", "youtube.com", "scholar.google")
+SCHOLAR_LINK = re.compile(r"https?://scholar\.google\.[^\s)\]'\"<>]+", re.I)
+ORCID_RE = re.compile(r"\b(?:https?://orcid\.org/)?(\d{4}-\d{4}-\d{4}-[\dX]{4})\b", re.I)
+PUB_LINK_WORDS = re.compile(r"\b(publications?|papers?|selected works|bibliography|inspire(?:hep)?|research output)\b", re.I)
+
+
+def publication_pages(text, limit=4):
+    """Bibliography/publication-list pages explicitly linked from the official profile."""
+    out = []
+    for m in LINK.finditer(text or ""):
+        label, url = m.group(1), m.group(2)
+        if PUB_LINK_WORDS.search(label) and "scholar.google" not in url.lower():
+            if url not in out:
+                out.append(url)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def identity_signals(text, base_url="", name=""):
+    """Scan the ENTIRE fetched profile text for deterministic identity evidence.
+
+    This is intentionally not an LLM prefix window: Scholar/ORCID/publication links near the
+    bottom of long faculty pages are still found.
+    """
+    scholar_urls, scholar_ids = [], []
+    for m in SCHOLAR_LINK.finditer(text or ""):
+        url = m.group(0).rstrip(".,;")
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        uid = (q.get("user") or [""])[0]
+        if uid and uid not in scholar_ids:
+            scholar_ids.append(uid)
+            scholar_urls.append(url)
+    om = ORCID_RE.search(text or "")
+    return {
+        "scholar_ids": scholar_ids,
+        "scholar_urls": scholar_urls,
+        "orcid": om.group(1) if om else "",
+        "publication_pages": publication_pages(text),
+        "linked_pages": linked_pages(text, name),
+        "anchors": publications(text, limit=8),
+    }
+
+
+def identity_excerpt(text, limit=18000):
+    """Compact long pages without losing identity/publication sections.
+
+    Includes the beginning plus every line mentioning Scholar/ORCID/publications and nearby lines.
+    """
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    lines = text.splitlines()
+    keep = set(range(min(len(lines), 80)))
+    hit = re.compile(r"scholar\.google|orcid|publications?|selected works|books|articles|doi", re.I)
+    for i, line in enumerate(lines):
+        if hit.search(line):
+            keep.update(range(max(0, i - 8), min(len(lines), i + 40)))
+    out = "\n".join(lines[i] for i in sorted(keep))
+    return out[:limit]
 
 
 def linked_pages(text, name, limit=2):
@@ -119,14 +178,19 @@ def linked_pages(text, name, limit=2):
 
 
 def from_page(url, name=""):
-    """Faculty page first; if it lists nothing, the personal / lab pages it links to.
-    Returns (publications, grants, ok, pages_used)."""
+    """Faculty page first; then its explicit Publications link; then personal/lab pages.
+
+    The whole fetched page is scanned before any fallback.
+    Returns (publications, grants, ok, pages_used).
+    """
     page = fx.fetch_page(url)
     if not page.get("ok"):
         return [], [], False, []
-    pubs, grs, used = publications(page["text"]), grants(page["text"]), [url]
+    text = page["text"]
+    pubs, grs, used = publications(text), grants(text), [url]
     if not pubs:
-        for link in linked_pages(page["text"], name):
+        candidates = publication_pages(text) + [u for u in linked_pages(text, name) if u not in publication_pages(text)]
+        for link in candidates:
             sub = fx.fetch_page(link)
             if not sub.get("ok"):
                 continue
