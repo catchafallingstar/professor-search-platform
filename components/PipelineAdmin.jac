@@ -60,6 +60,7 @@ def:pub PipelineAdmin() -> JsxElement {
         try {
             rows = await get_pipeline_status();
             worker = await get_worker_state();
+            upgrade = await get_database_upgrade_state();
             error = "";
         } except Exception as e {
             error = "Could not load pipeline status: " + str(e);
