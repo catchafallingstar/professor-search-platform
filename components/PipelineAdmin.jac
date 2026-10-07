@@ -218,6 +218,7 @@ def:pub PipelineAdmin() -> JsxElement {
                                 <TableHead>{"University"}</TableHead>
                                 <TableHead>{"Priority"}</TableHead>
                                 <TableHead>{"State"}</TableHead>
+                                <TableHead className="text-right">{"Coverage"}</TableHead>
                                 <TableHead className="text-right">{"Professors"}</TableHead>
                                 <TableHead className="text-right">{"Matched"}</TableHead>
                                 <TableHead className="text-right">{"Papers"}</TableHead>
@@ -240,6 +241,12 @@ def:pub PipelineAdmin() -> JsxElement {
                                         <div className="flex flex-col gap-1">
                                             <Badge variant={"default" if r.pipeline_state == "DONE" else ("outline" if r.pipeline_state == "QUEUED" else "secondary")}>{r.pipeline_state}</Badge>
                                             {r.pipeline_note and <span className="max-w-56 text-xs text-muted-foreground">{r.pipeline_note}</span>}
+                                        </div>
+                                    </TableCell>
+                                    <TableCell className="text-right">
+                                        <div className="flex flex-col items-end gap-1">
+                                            <span className="tabular-nums">{(str(r.coverage_readable) + " / " + str(r.coverage_units)) if r.coverage_units else "—"}</span>
+                                            {r.coverage_state and <Badge variant={"secondary" if r.coverage_state == "COMPLETE" else "outline"}>{r.coverage_state}</Badge>}
                                         </div>
                                     </TableCell>
                                     <TableCell className="text-right tabular-nums">{str(r.processed) + " / " + str(r.professors)}</TableCell>
