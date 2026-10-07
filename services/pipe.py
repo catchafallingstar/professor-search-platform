@@ -701,10 +701,8 @@ def _local_llm_pick(p, inst):
 
 
 def _llm_publications(p, inst):
-    """Last resort. Local model chooses among real OpenAlex candidates; Python confirms
-    name and university. Only use the cloud publication task when no local model is configured."""
+    """Final fallback only. Any provider outage stays RETRY_LATER, never "no publications"."""
     from services import llm_local
-    ai = _ai()
     if llm_local.configured():
         try:
             return _local_llm_pick(p, inst)
@@ -715,27 +713,35 @@ def _llm_publications(p, inst):
             print(f"[pipeline] local model failed for {p['name']}: {failed}")
             return {"llm_papers_checked": st.now_iso(),
                     "llm_papers_ai": {"model_used": os.environ.get("LLM_MODEL", ""), "last_error": failed[:300]}}, "LLM_FAILED"
+
     ai = _ai()
     if not ai:
-        return {}, ""
+        # No model configured is not a factual "no result"; let the deterministic ladder finish
+        # without inventing an AI outcome.
+        return {"llm_papers_checked": st.now_iso(), "llm_papers_ai": {}}, "NO_RESULT_FOUND"
+
+    from services import facultypage as fpg
     page_text = ""
     if p.get("faculty_url"):
-        pg = fx.fetch_page(p["faculty_url"])
-        if pg.get("ok") and st.normalize_name(p["name"]).split()[-1] in st.normalize_name(pg["text"]):
-            page_text = pg["text"]                      # only a page that actually mentions the person
-    papers, meta = None, {}
-    if True:
-        o = ai.find_publications(p["name"], inst.get("name", ""), p.get("department", ""), p.get("title", ""), page_text)
-        meta = _ai_meta(o)
-        if o.status != "STAFF_REVIEW":
-            papers = list(o.value or [])
-        else:
-            failed = (failed + " | " if failed else "") + o.last_error[:200]
-    base = {"llm_papers_checked": st.now_iso(), "llm_papers_ai": dict(meta, last_error=failed[:300]) if failed else meta}
-    if papers is None:
-        return base, "LLM_FAILED"
+        pg = fx.fetch_page_cached(p["faculty_url"])
+        pname = nu.normalize_person_name(p["name"]).split()
+        last = pname[-1] if pname else ""
+        if pg.get("ok") and last and last in st.normalize_name(pg.get("text", "")):
+            page_text = fpg.identity_excerpt(pg.get("text", ""), limit=10000)
+
+    o = ai.find_publications(p["name"], inst.get("name", ""), p.get("department", ""), p.get("title", ""), page_text)
+    meta = _ai_meta(o)
+    if o.status == "RETRY_LATER":
+        return {"llm_papers_checked": st.now_iso(),
+                "llm_papers_ai": dict(meta, last_error=(o.last_error or "")[:300])}, "LLM_FAILED"
+    if o.status == "STAFF_REVIEW":
+        return {"llm_papers_checked": st.now_iso(),
+                "llm_papers_ai": dict(meta, last_error=(o.last_error or "")[:300])}, "LLM_FAILED"
+
+    papers = list(o.value or [])
+    base = {"llm_papers_checked": st.now_iso(), "llm_papers_ai": meta}
     if not papers:
-        return base, "NO_RESULT_FOUND"                  # the model knows of no papers: an accepted answer
+        return base, "NO_RESULT_FOUND"
     aid, verified = _llm_papers_to_author(p, inst, papers)
     if aid:
         return dict(base, openalex_author_id=aid, match_status="MATCHED", match_method="LLM_VERIFIED",
