@@ -141,6 +141,7 @@ def:pub PipelineAdmin() -> JsxElement {
         if r.pipeline_state == "DONE" { finished += 1; }
     }
     running = worker.running if worker else False;
+    upgrade_running = bool(upgrade and upgrade.status == "RUNNING");
     llm_ok = config.llm_key if config else False;
     log: list[str] = worker.log if worker else [];
 
