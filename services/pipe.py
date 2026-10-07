@@ -157,7 +157,7 @@ def more_from_profiles(url, dept, rows, max_pages=250):
     page = fx.fetch_page_cached(url)
     if not page.get("ok"):
         return []
-    have = {st.normalize_name(r["name"]) for r in rows}
+    have = {nu.storage_key(r["name"]) for r in rows}
     have_urls = {r.get("profile_url") for r in rows if r.get("profile_url")}
     profiles = [u for u in discovery.sitemap_profiles(url, limit=max_pages) if u not in have_urls]
     if not profiles:
@@ -178,12 +178,12 @@ def more_from_profiles(url, dept, rows, max_pages=250):
         if not pg.get("ok"):
             continue
         name = re.split(r"\s+[|\-–]\s+", (pg.get("title") or "").strip())[0].strip()
-        if not st.looks_like_person(name) or st.normalize_name(name) in have:
+        if not st.looks_like_person(name) or nu.storage_key(name) in have:
             continue
         title = title_from_page(pg.get("text", ""), name)
         if not title:
             continue
-        have.add(st.normalize_name(name))
+        have.add(nu.storage_key(name))
         extra.append({"name": name, "title": title, "department": dept, "profile_url": purl})
     return extra
 
@@ -231,7 +231,8 @@ def crawl(inst):
         for r in rows[:MAX_PER_DEPARTMENT]:
             if _NOT_CORE_TITLE.search(r.get("title") or ""):
                 continue        # adjunct / visiting / emeritus / affiliate: not this university's core faculty
-            if st.add_professor(inst, r["name"], r["title"], r["department"] or dept, r["profile_url"] or url):
+            if st.add_professor(inst, r["name"], r["title"], r["department"] or dept,
+                                r.get("profile_url") or "", directory_url=url):
                 n += 1
         added += n
         report.append({"department": dept, "url": url, "found": len(rows), "added": n, "via": via})
@@ -1214,7 +1215,8 @@ def retry_review_item(item_id):
                 for r in rows[:MAX_PER_DEPARTMENT]:
                     if _NOT_CORE_TITLE.search(r.get("title") or ""):
                         continue
-                    if st.add_professor(inst, r["name"], r["title"], r["department"] or dept, r["profile_url"] or url):
+                    if st.add_professor(inst, r["name"], r["title"], r["department"] or dept,
+                                        r.get("profile_url") or "", directory_url=url):
                         n += 1
                 d.staff_review.delete_one({"_id": item_id})
                 st.recount(inst["id"])
