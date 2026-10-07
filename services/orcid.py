@@ -31,6 +31,28 @@ def _uni_core(name):
     return re.split(r"\s*[-,]\s*", name or "")[0].strip()
 
 
+def linked_id_matches_name(orcid_id, p, names_match):
+    """Verify an ORCID id explicitly linked by an official faculty page belongs to this person.
+
+    The official page is already strong affiliation evidence, so the ORCID public *name* only
+    needs to match the professor. This extra read prevents hidden/site-wide ORCID metadata for a
+    different person from being stored on the current professor.
+    Returns True/False; network failure returns None so callers can retry later rather than guess.
+    """
+    if not orcid_id:
+        return False
+    try:
+        person = _get(f"{API}/{orcid_id}/person") or {}
+    except Exception:
+        return None
+    nm = person.get("name") or {}
+    given = ((nm.get("given-names") or {}).get("value") or "").strip()
+    family = ((nm.get("family-name") or {}).get("value") or "").strip()
+    credit = ((nm.get("credit-name") or {}).get("value") or "").strip()
+    candidates = [x for x in (f"{given} {family}".strip(), credit) if x]
+    return any(names_match(p.get("name", ""), x) for x in candidates)
+
+
 def find_record(p, inst, names_match):
     """Returns (orcid_id, record) or ("", None)."""
     parts = (p.get("name") or "").split()
