@@ -35,7 +35,11 @@ obj InstitutionStatus {
         unresolved: int = 0,
         papers: int = 0,
         grants: int = 0,
-        hiring: int = 0;
+        hiring: int = 0,
+        coverage_state: str = "",
+        coverage_units: int = 0,
+        coverage_readable: int = 0,
+        coverage_missing: int = 0;
 }
 
 obj StepResult {
@@ -73,7 +77,11 @@ def _status(r: dict) -> InstitutionStatus {
         pipeline_state=str(r.get("pipeline_state", "")), pipeline_note=str(r.get("pipeline_note", "")),
         professors=int(r.get("n_professors") or 0), processed=int(r.get("n_processed") or 0),
         matched=int(r.get("n_matched") or 0), unresolved=int(r.get("n_unresolved") or 0),
-        papers=int(r.get("n_papers") or 0), grants=int(r.get("n_grants") or 0), hiring=int(r.get("n_hiring") or 0)
+        papers=int(r.get("n_papers") or 0), grants=int(r.get("n_grants") or 0), hiring=int(r.get("n_hiring") or 0),
+        coverage_state=str(r.get("coverage_state") or ""),
+        coverage_units=int((r.get("coverage") or {}).get("units") or 0),
+        coverage_readable=int((r.get("coverage") or {}).get("readable_units") or 0),
+        coverage_missing=len((r.get("coverage") or {}).get("missing") or []) + len((r.get("coverage") or {}).get("empty_directories") or [])
     );
 }
 
