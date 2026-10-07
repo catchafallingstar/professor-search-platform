@@ -2,9 +2,10 @@
 
     python -m services.cleanup [step ...]
     common repair after upgrading:
-      python -m services.cleanup names retry_identity author_duplicates states depts nonpersons counts
+      python -m services.cleanup names retry_identity profile_rescan author_duplicates states depts nonpersons paper_orphans counts
 
-    steps: names retry_identity author_duplicates states nonpersons depts benjaafar hiring grants identity papers affiliation counts
+    steps: names retry_identity profile_rescan author_duplicates states nonpersons depts benjaafar hiring
+           grants identity papers paper_orphans affiliation counts
 
 identity : re-check every OpenAlex match with pipe.identity_check; failures are unlinked (papers and
            subfields cleared, match UNRESOLVED, rejected id kept) and queued for a fresh, gated match.
@@ -147,6 +148,32 @@ def retry_identity():
             st.recount(iid)
     st.invalidate_search()
     log(f"retry_identity: reopened {len(rows)} prematurely finalized professor rows across {len([x for x in insts if x])} universities")
+
+
+def profile_rescan():
+    """Re-run legacy completed rows through the new full-page, Scholar-first identity order.
+
+    Old rows remain visible while pending: existing papers/matches are not erased here. The normal
+    processor re-reads the complete official page, tries its Scholar link/search first, then page
+    publications, and replaces stale weak identity conclusions only after new evidence is checked.
+    """
+    d = st.db()
+    q = {"pipeline_done": True, "profile_full_scan_at": {"$exists": False}}
+    rows = list(d.professors.find(q, {"institution_id": 1}))
+    insts = {r.get("institution_id", "") for r in rows if r.get("institution_id")}
+    if rows:
+        ids = [r["_id"] for r in rows]
+        for i in range(0, len(ids), 1000):
+            d.professors.update_many({"_id": {"$in": ids[i:i + 1000]}},
+                                     {"$set": {"pipeline_done": False, "identity_retry_after": 0}})
+    for iid in insts:
+        d.institutions.update_one({"_id": iid}, {"$set": {
+            "pipeline_state": "PROCESSING",
+            "pipeline_note": "Re-scanning official faculty pages with Scholar-first identity logic."
+        }})
+        st.recount(iid)
+    st.invalidate_search()
+    log(f"profile_rescan: reopened {len(rows)} legacy processed rows across {len(insts)} universities")
 
 
 def author_duplicates():
@@ -379,6 +406,29 @@ def papers():
     log("papers: done")
 
 
+def paper_orphans():
+    """Delete paper documents no professor references anymore.
+
+    Identity repairs deliberately clear/replace professor.paper_ids. The old paper documents then
+    become unreachable but still consume Atlas Free storage. This removes only unreachable papers.
+    """
+    d = st.db()
+    used = set()
+    for p in d.professors.find({}, {"paper_ids": 1}):
+        used.update(p.get("paper_ids") or [])
+    dead = []
+    removed = 0
+    for row in d.papers.find({}, {"_id": 1}):
+        if row["_id"] not in used:
+            dead.append(row["_id"])
+        if len(dead) >= 1000:
+            removed += d.papers.delete_many({"_id": {"$in": dead}}).deleted_count
+            dead = []
+    if dead:
+        removed += d.papers.delete_many({"_id": {"$in": dead}}).deleted_count
+    log(f"paper_orphans: removed {removed} unreferenced paper documents; {len(used)} referenced ids kept")
+
+
 def affiliation():
     """Current-affiliation check for every professor (page title + recent paper affiliations)."""
     d = st.db()
@@ -411,9 +461,10 @@ def counts():
     log("counts: every university recomputed from its professor rows")
 
 
-STEPS = {"names": names, "retry_identity": retry_identity, "author_duplicates": author_duplicates,
-         "states": states, "nonpersons": nonpersons, "depts": depts, "benjaafar": benjaafar,
-         "hiring": hiring, "grants": grants, "identity": identity, "papers": papers,
+STEPS = {"names": names, "retry_identity": retry_identity, "profile_rescan": profile_rescan,
+         "author_duplicates": author_duplicates, "states": states, "nonpersons": nonpersons,
+         "depts": depts, "benjaafar": benjaafar, "hiring": hiring, "grants": grants,
+         "identity": identity, "papers": papers, "paper_orphans": paper_orphans,
          "affiliation": affiliation, "counts": counts}
 
 if __name__ == "__main__":
