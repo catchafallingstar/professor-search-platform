@@ -475,7 +475,7 @@ def _via_reader(url, patient=False):
         headers.update({"X-Timeout": "30", "X-Wait-For-Selector": "main"})
     req = urllib.request.Request(READER + url, headers=headers)
     with urllib.request.urlopen(req, timeout=90 if patient else 60) as resp:
-        md = resp.read(3_000_000).decode("utf-8", errors="ignore")
+        md = resp.read(5_000_000).decode("utf-8", errors="ignore")
     title = ""
     m = re.match(r"\s*Title:\s*(.+)", md)
     if m:
@@ -519,7 +519,7 @@ def fetch_page(url):
                                                    "Accept-Language": "en-US,en;q=0.9"})
         with urllib.request.urlopen(req, timeout=20) as resp:
             ctype = resp.headers.get("Content-Type", "")
-            raw = resp.read(2_000_000).decode("utf-8", errors="ignore")
+            raw = resp.read(5_000_000).decode("utf-8", errors="ignore")
             final = resp.geturl()
         if "html" in ctype or "text" in ctype:
             if _blocked(raw):
