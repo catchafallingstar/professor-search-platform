@@ -2,9 +2,9 @@
 
     python -m services.cleanup [step ...]
     common repair after upgrading:
-      python -m services.cleanup names retry_identity depts nonpersons counts
+      python -m services.cleanup names retry_identity author_duplicates states depts nonpersons counts
 
-    steps: names retry_identity nonpersons depts benjaafar hiring grants identity papers affiliation counts
+    steps: names retry_identity author_duplicates states nonpersons depts benjaafar hiring grants identity papers affiliation counts
 
 identity : re-check every OpenAlex match with pipe.identity_check; failures are unlinked (papers and
            subfields cleared, match UNRESOLVED, rejected id kept) and queued for a fresh, gated match.
@@ -147,6 +147,74 @@ def retry_identity():
             st.recount(iid)
     st.invalidate_search()
     log(f"retry_identity: reopened {len(rows)} prematurely finalized professor rows across {len([x for x in insts if x])} universities")
+
+
+def author_duplicates():
+    """Repair duplicate professor cards that point at the same OpenAlex author at one university.
+
+    Compatible name variants are merged (Erin Cech / Erin A. Cech). Conflicting names are all
+    reopened so the current strict identity gate decides again instead of preserving a bad link.
+    """
+    d = st.db()
+    groups = {}
+    for p in d.professors.find({"match_status": "MATCHED", "openalex_author_id": {"$nin": ["", None]}}):
+        key = (p.get("institution_id", ""), p.get("openalex_author_id", ""))
+        groups.setdefault(key, []).append(p)
+    merged = reopened = 0
+    touched = set()
+    for (iid, aid), rows in groups.items():
+        if len(rows) < 2:
+            continue
+        compatible = all(nu.names_match_strict(a.get("name", ""), b.get("name", ""))
+                         for i, a in enumerate(rows) for b in rows[i + 1:])
+        if compatible:
+            before = d.professors.count_documents({"institution_id": iid, "openalex_author_id": aid})
+            st.collapse_author_duplicates(iid, aid)
+            after = d.professors.count_documents({"institution_id": iid, "openalex_author_id": aid})
+            merged += max(0, before - after)
+            touched.add(iid)
+            continue
+
+        # Old loose first-initial matching could map two different names to one author. Remove the
+        # conclusion from every conflicting row; the new page/Scholar/strict-name pipeline retries.
+        for r in rows:
+            d.professors.update_one({"_id": r["_id"]}, {"$set": {
+                "previous_match_note": r.get("match_note", ""),
+                "openalex_author_id": "", "match_status": "PENDING", "match_method": "", "match_note": "",
+                "pipeline_done": False, "identity_retry_after": 0,
+                "paper_ids": [], "subfields": [], "fields": [], "profile_extracted": False,
+            }, "$unset": {"identity_checked": "", "identity_steps": "", "profile_full_scan_at": "",
+                           "scholar_checked": "", "rejected_author_id": ""}})
+            reopened += 1
+        touched.add(iid)
+        log(f"author_duplicates: reopened conflicting author {aid}: "
+            + ", ".join(r.get("name", "") for r in rows))
+
+    for iid in touched:
+        if iid:
+            d.institutions.update_one({"_id": iid}, {"$set": {
+                "pipeline_state": "PROCESSING",
+                "pipeline_note": "Duplicate author identities repaired; reprocessing affected rows."
+            }})
+            st.recount(iid)
+    st.invalidate_search()
+    log(f"author_duplicates: merged {merged} duplicate cards; reopened {reopened} conflicting rows")
+
+
+def states():
+    """A DONE university must not contain unprocessed professor rows."""
+    d = st.db()
+    repaired = 0
+    pending_ids = d.professors.distinct("institution_id", {"pipeline_done": False})
+    for iid in pending_ids:
+        inst = d.institutions.find_one({"_id": iid}, {"pipeline_state": 1})
+        if inst and inst.get("pipeline_state") == "DONE":
+            d.institutions.update_one({"_id": iid}, {"$set": {
+                "pipeline_state": "PROCESSING",
+                "pipeline_note": "Pending professor rows found during consistency audit; processing resumed."
+            }})
+            repaired += 1
+    log(f"states: reopened {repaired} DONE universities that still had pending professors")
 
 
 def nonpersons():
@@ -343,9 +411,10 @@ def counts():
     log("counts: every university recomputed from its professor rows")
 
 
-STEPS = {"names": names, "retry_identity": retry_identity, "nonpersons": nonpersons, "depts": depts,
-         "benjaafar": benjaafar, "hiring": hiring, "grants": grants, "identity": identity,
-         "papers": papers, "affiliation": affiliation, "counts": counts}
+STEPS = {"names": names, "retry_identity": retry_identity, "author_duplicates": author_duplicates,
+         "states": states, "nonpersons": nonpersons, "depts": depts, "benjaafar": benjaafar,
+         "hiring": hiring, "grants": grants, "identity": identity, "papers": papers,
+         "affiliation": affiliation, "counts": counts}
 
 if __name__ == "__main__":
     for name in (sys.argv[1:] or list(STEPS)):
