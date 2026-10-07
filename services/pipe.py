@@ -1606,7 +1606,22 @@ def enrich_profile(p, inst):
         out["scholar_link_candidates"] = list(signals["scholar_ids"])
         out["scholar_link_urls"] = list(signals.get("scholar_urls") or [])
     if signals.get("orcid") and not p.get("orcid"):
-        out["orcid"] = signals["orcid"]
+        # Do not trust a bare id just because it appeared somewhere in a rendered university page.
+        # Verify the official-page ORCID against ORCID's public name record first.
+        try:
+            from services import orcid as orcid_service
+            verdict = orcid_service.linked_id_matches_name(signals["orcid"], p, names_match)
+        except Exception:
+            verdict = None
+        if verdict is True:
+            out["orcid"] = signals["orcid"]
+            out["orcid_source"] = "FACULTY_PAGE_VERIFIED"
+        elif verdict is False:
+            out["rejected_orcid"] = signals["orcid"]
+            out["orcid_reject_note"] = "ORCID linked/embedded on faculty page did not match professor name."
+        else:
+            # A temporary ORCID outage is not a factual rejection. Leave it for the ORCID step.
+            out["orcid_candidate"] = signals["orcid"]
 
     pubs = list(signals.get("anchors") or [])
     # Some faculty pages only link to "Publications". Follow those explicit links before using
