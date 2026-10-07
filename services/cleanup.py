@@ -163,12 +163,22 @@ def nonpersons():
 def depts():
     d = st.db()
     n = 0
-    for p in d.professors.find({"department": {"$ne": ""}}, {"department": 1}):
+    insts = set()
+    for p in d.professors.find({"department": {"$ne": ""}}, {"department": 1, "institution_id": 1}):
         c = st.clean_department(p.get("department", ""))
         if c != p.get("department"):
             d.professors.update_one({"_id": p["_id"]}, {"$set": {"department": c}})
+            insts.add(p.get("institution_id", ""))
             n += 1
-    log(f"depts: cleared {n} page-heading departments")
+    # Re-crawl affected universities once. add_professor() now repairs metadata on duplicate IDs,
+    # so a real department discovered on the new pass replaces the cleared generic page label.
+    for iid in insts:
+        if iid:
+            d.institutions.update_one({"_id": iid}, {"$set": {
+                "pipeline_state": "CRAWLING",
+                "pipeline_note": "Generic department labels cleared; re-crawling faculty metadata."
+            }})
+    log(f"depts: cleared {n} page-heading departments; queued {len([x for x in insts if x])} universities for metadata re-crawl")
 
 
 def benjaafar():
