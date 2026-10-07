@@ -2,7 +2,7 @@
 
     python -m services.cleanup [step ...]
     common repair after upgrading:
-      python -m services.cleanup names directory_profiles retry_identity profile_rescan author_duplicates states depts nonpersons paper_orphans counts
+      python -m services.cleanup upgrade_safe
 
     steps: names directory_profiles retry_identity profile_rescan author_duplicates states nonpersons depts benjaafar hiring
            grants identity papers paper_orphans affiliation counts
@@ -284,6 +284,71 @@ def author_duplicates():
     log(f"author_duplicates: merged {merged} duplicate cards; reopened {reopened} conflicting rows")
 
 
+def orcid_conflicts():
+    """Clear ORCID ids that are attached to incompatible professor names.
+
+    Same-person duplicate cards (e.g. Erin Cech / Erin A. Cech) are allowed. A single ORCID on
+    genuinely different names is unsafe evidence and usually came from an old whole-page scrape.
+    Those rows are reopened so the official-page/Scholar/ORCID pipeline can rebuild identity.
+    """
+    d = st.db()
+    groups = {}
+    for p in d.professors.find({"orcid": {"$nin": ["", None]}},
+                               {"name": 1, "orcid": 1, "institution_id": 1, "match_status": 1,
+                                "match_note": 1, "pipeline_done": 1}):
+        groups.setdefault(p.get("orcid", ""), []).append(p)
+
+    reopened = 0
+    touched = set()
+    for oid, rows in groups.items():
+        if len(rows) < 2:
+            continue
+        compatible = all(nu.names_match_strict(a.get("name", ""), b.get("name", ""))
+                         for i, a in enumerate(rows) for b in rows[i + 1:])
+        if compatible:
+            continue
+        for r in rows:
+            update = {
+                "$set": {
+                    "previous_orcid": oid,
+                    "orcid": "",
+                    "pipeline_done": False,
+                    "profile_extracted": False,
+                    "identity_retry_after": 0,
+                },
+                "$unset": {
+                    "profile_full_scan_at": "", "orcid_checked": "", "orcid_source": "",
+                    "orcid_candidate": "", "orcid_reject_note": "",
+                },
+            }
+            # If the bad ORCID participated in an unresolved/weak result, reopen identity entirely.
+            if r.get("match_status") in ("UNRESOLVED", "NO_RESULT_FOUND", "PENDING"):
+                update["$set"].update({
+                    "openalex_author_id": "", "match_status": "PENDING",
+                    "match_method": "", "match_note": "",
+                    "paper_ids": [], "subfields": [], "fields": [],
+                })
+                update["$unset"].update({
+                    "identity_checked": "", "identity_steps": "", "scholar_checked": "",
+                    "llm_papers_checked": "", "llm_papers_ai": "", "rejected_author_id": "",
+                })
+            d.professors.update_one({"_id": r["_id"]}, update)
+            touched.add(r.get("institution_id", ""))
+            reopened += 1
+        log(f"orcid_conflicts: cleared shared incompatible ORCID {oid}: "
+            + ", ".join(r.get("name", "") for r in rows))
+
+    for iid in touched:
+        if iid:
+            d.institutions.update_one({"_id": iid}, {"$set": {
+                "pipeline_state": "PROCESSING",
+                "pipeline_note": "Conflicting ORCID evidence repaired; affected professors are being reprocessed."
+            }})
+            st.recount(iid)
+    st.invalidate_search()
+    log(f"orcid_conflicts: reopened {reopened} professor rows across {len([x for x in touched if x])} universities")
+
+
 def states():
     """A DONE university must not contain unprocessed professor rows."""
     d = st.db()
@@ -516,7 +581,7 @@ def upgrade_safe():
     This does not call OpenAlex, Scholar, DDGS or an LLM itself. It only repairs/reopens MongoDB
     rows; the normal background pipeline then reprocesses them with the new rules.
     """
-    for fn in (names, directory_profiles, retry_identity, profile_rescan,
+    for fn in (names, directory_profiles, retry_identity, orcid_conflicts, profile_rescan,
                author_duplicates, states, nonpersons, depts, paper_orphans):
         fn()
     counts()
@@ -531,7 +596,7 @@ def counts():
 
 
 STEPS = {"upgrade_safe": upgrade_safe, "names": names, "directory_profiles": directory_profiles,
-         "retry_identity": retry_identity, "profile_rescan": profile_rescan,
+         "retry_identity": retry_identity, "orcid_conflicts": orcid_conflicts, "profile_rescan": profile_rescan,
          "author_duplicates": author_duplicates, "states": states, "nonpersons": nonpersons,
          "depts": depts, "benjaafar": benjaafar, "hiring": hiring, "grants": grants,
          "identity": identity, "papers": papers, "paper_orphans": paper_orphans,
