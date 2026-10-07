@@ -190,7 +190,7 @@ def:pub PipelineAdmin() -> JsxElement {
                     <Button
                         variant={upgrade and upgrade.done ? "outline" : "default"}
                         onClick={run_upgrade}
-                        disabled={upgrading or running or bool(upgrade and upgrade.done)}
+                        disabled={upgrading or running or bool(upgrade and (upgrade.done or upgrade.status == "RUNNING"))}
                     >
                         {upgrading and <Spinner />}
                         {("Database upgrade completed" if upgrade and upgrade.done else ("Running database upgrade..." if upgrading or (upgrade and upgrade.status == "RUNNING") else "Run database upgrade"))}
