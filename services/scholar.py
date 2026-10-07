@@ -121,13 +121,19 @@ def _verified(prof, p, inst, domain, names_match):
 # ---------- finding candidate profile ids ----------
 
 def _ids_from_pages(p):
-    """Scholar profile links on the faculty page (and its personal / lab page)."""
+    """Scholar profile links on the faculty page (and its personal / lab page).
+
+    enrich_profile() already scans the whole official page, so reuse scholar_id when present
+    instead of fetching the page a second time.
+    """
     out = []
+    if p.get("scholar_id"):
+        out.append(str(p["scholar_id"]))
     for url in [p.get("faculty_url"), p.get("personal_url"), p.get("lab_url")]:
         if not url:
             continue
-        pg = fx.fetch_page(url)
-        for m in re.finditer(r"scholar\.google\.[a-z.]+/citations\?[^)\s\"']*user=([A-Za-z0-9_\-]{12})", pg.get("text") or ""):
+        pg = fx.fetch_page_cached(url)
+        for m in re.finditer(r"scholar\.google\.[a-z.]+/citations\?[^)\s\"']*user=([A-Za-z0-9_\-]{8,32})", pg.get("text") or ""):
             if m.group(1) not in out:
                 out.append(m.group(1))
     return out
