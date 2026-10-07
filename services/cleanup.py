@@ -4,8 +4,8 @@
     common repair after upgrading:
       python -m services.cleanup upgrade_safe
 
-    steps: names directory_profiles retry_identity profile_rescan author_duplicates states nonpersons depts benjaafar hiring
-           grants identity papers paper_orphans affiliation counts
+    steps: names directory_profiles retry_identity orcid_conflicts profile_rescan author_duplicates states nonpersons
+           depts benjaafar hiring grants grant_recheck identity papers paper_orphans affiliation counts
 
 identity : re-check every OpenAlex match with pipe.identity_check; failures are unlinked (papers and
            subfields cleared, match UNRESOLVED, rejected id kept) and queued for a fresh, gated match.
@@ -443,6 +443,22 @@ def hiring():
     log(f"hiring: withdrew {n}")
 
 
+def grant_recheck():
+    """Queue a fresh grant rebuild for every professor that currently has stored grant links.
+
+    This is intentionally NOT part of upgrade_safe: it calls external NSF/NIH/OpenAlex sources
+    through the normal background worker. Use it after identity/name repairs settle. Each job
+    replaces the professor's grant list with results from the current strict investigator +
+    institution rules, which removes stale links created by older matching logic.
+    """
+    d = st.db()
+    n = 0
+    for p in d.professors.find({"grant_count": {"$gt": 0}}, {"_id": 1}):
+        pipe.queue_test_job("GRANT_CHECK", str(p["_id"]), priority=1)
+        n += 1
+    log(f"grant_recheck: queued {n} professors with existing grant links for current-rule validation")
+
+
 def grants():
     d = st.db()
     canon_first, merged = {}, 0
@@ -599,7 +615,7 @@ STEPS = {"upgrade_safe": upgrade_safe, "names": names, "directory_profiles": dir
          "retry_identity": retry_identity, "orcid_conflicts": orcid_conflicts, "profile_rescan": profile_rescan,
          "author_duplicates": author_duplicates, "states": states, "nonpersons": nonpersons,
          "depts": depts, "benjaafar": benjaafar, "hiring": hiring, "grants": grants,
-         "identity": identity, "papers": papers, "paper_orphans": paper_orphans,
+         "grant_recheck": grant_recheck, "identity": identity, "papers": papers, "paper_orphans": paper_orphans,
          "affiliation": affiliation, "counts": counts}
 
 if __name__ == "__main__":
