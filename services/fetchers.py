@@ -569,9 +569,9 @@ _BAD_NAME = re.compile(r"faculty|directory|people|department|school|college|univ
 
 
 def _clean_name(s):
-    s = re.sub(r"\s+", " ", s).strip(" ,;:-|")
-    s = re.sub(r",?\s*(Ph\.?D\.?|PhD|P\.E\.|Jr\.?|Sr\.?|III|II)$", "", s).strip(" ,")
-    return s
+    # One canonical cleaner for every extraction path (rules, WordPress, sitemap profiles).
+    from services import name_utils as nu
+    return nu.clean_person_name(s)
 
 
 def _looks_like_name(s):
@@ -633,7 +633,7 @@ def _line_faculty(text, department):
         # "S. Jack Hu Collegiate Professor of ... Professor, EECS"), and not as research/emeritus
         if not m or m.start() > 90 or _EXCLUDE_TITLE.search(nxt[:m.end() + 20]):
             continue
-        name = _clean_name(_flip(cand))
+        name = _clean_name(cand)
         if _looks_like_name(name):
             out.append((name, m.group(1), ""))
     return out
@@ -652,7 +652,9 @@ def extract_faculty_rules(page, department):
     if not page.get("ok"):
         return []
     text = page["text"]
+    from services import store as st
     college_wide = bool(re.match(r"(college|school|faculty) of", department or "", re.I))
+    generic_dept = not st.clean_department(department or "")
     out, seen = [], set()
     for name, title, _ in _line_faculty(text, department):
         key = name.lower()
@@ -671,7 +673,7 @@ def extract_faculty_rules(page, department):
             title = inner.group(1)
         else:      # "[Aliaga](url)\n Professor"
             title = _title_near(text, m.start(), m.end())
-        name = _clean_name(_flip(name))
+        name = _clean_name(name)
         title = re.sub(r"\s+", " ", title).strip(" ,;")
         if not title or _EXCLUDE_TITLE.search(title) or not _looks_like_name(name):
             continue
@@ -686,7 +688,7 @@ def extract_faculty_rules(page, department):
         # Keep the rank only (drop trailing campus names etc.)
         rank = re.match(r"((?:Distinguished |Endowed |University |Collegiate |Full |Associate |Assistant )*Professor)", title, re.I)
         dept = department
-        if college_wide:
+        if college_wide or generic_dept:
             dept = _dept_near(text, m.end()) or department
         out.append({"name": name, "title": (rank.group(1) if rank else title)[:80],
                     "department": dept, "profile_url": url})
