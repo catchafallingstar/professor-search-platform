@@ -6,6 +6,7 @@ def test_removable_credentials_are_not_part_of_identity():
     assert nu.clean_person_name("Brendon Watson, Ph.D., M.D.") == "Brendon Watson"
     assert nu.clean_person_name("Ke'Andra Hagans, MSW, LCSW, SSW") == "Ke'Andra Hagans"
     assert nu.clean_person_name("MD Ari Blitz") == "Ari Blitz"
+    assert nu.clean_person_name("Dr. Carolyn Duncan's X") == "Carolyn Duncan"
 
 
 def test_real_name_tokens_are_preserved():
