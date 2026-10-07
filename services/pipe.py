@@ -858,14 +858,13 @@ def _save_scholar_works(p, got):
                          "paper_url": got.get("scholar_url", ""), "citation_count": 0, "subfield": "", "field": "",
                          "source": "GOOGLE_SCHOLAR", "authors": x["authors"][:300]})
         ids.append(pid)
-    return dict(got, paper_ids=ids, pipeline_done=True, last_openalex_update=st.now_iso())
+    return dict(got, openalex_author_id="", paper_ids=ids, pipeline_done=True,
+                last_openalex_update=st.now_iso())
 
 
-def resolve_unmatched(p, inst, inst_oid):
-    """Pipeline entry: OpenAlex name + institution failed -> run the identity ladder. Grants and
-    hiring run afterwards for every outcome (process_professor), so a professor with no indexed
-    papers still gets faculty-page grants and hiring signals. Unresolved -> Staff review."""
-    fields, done, status = identity_ladder(p, inst, inst_oid)
+def resolve_unmatched(p, inst, inst_oid, done=None):
+    """Continue the identity ladder after stronger identity steps have already run."""
+    fields, done, status = identity_ladder(p, inst, inst_oid, done=done)
     if status == "RETRY_LATER":
         return None                                  # keep pipeline_done=False; retry after a short delay
     if status in ("MATCHED", "SCHOLAR", "FACULTY_PAGE"):
@@ -1579,11 +1578,8 @@ def enrich_profile(p, inst):
     """
     if not p.get("faculty_url"):
         return {}
-    # Rows processed before the full-page scanner existed have profile_extracted=True but no
-    # profile_full_scan_at. Rescan those once so old data gets the new Scholar/publication logic.
-    if p.get("profile_full_scan_at"):
-        return {}
-
+    # Re-scan the complete official page on every real processing pass. Short retry loops reuse
+    # fetch_page_cached(), while monthly maintenance can pick up newly added identity links.
     from services import facultypage as fpg
     page = fx.fetch_page_cached(p["faculty_url"])
     if not page.get("ok"):
@@ -1833,39 +1829,64 @@ def check_hiring(p, inst):
 
 
 def process_professor(p, inst):
+    """Process one professor in strict evidence order: complete official page, Google Scholar,
+    faculty-page publications, then weaker OpenAlex/ORCID/AI fallbacks."""
     inst_oid = resolve_institution(inst)
     fields = enrich_profile(p, inst)
     p = dict(p, **fields)
 
-    if not p.get("openalex_author_id"):
-        # Strongest first: a Scholar profile explicitly linked by this person's official page.
-        from services import scholar
-        linked, linked_reason = scholar.match_via_linked_scholar(p, inst, names_match)
-        if linked_reason == "RETRY_LINKED":
-            fields.update(pipeline_done=False, identity_retry_after=time.time() + 90)
-            st.update_professor(p["id"], fields)
-            return f"{p['name']} ({inst['name']}): linked Google Scholar profile temporarily unreadable; retrying later."
-        if linked.get("match_status") == "MATCHED":
-            fields.update(gated(p, linked))
-        elif linked.get("match_status") == "SCHOLAR":
-            fields.update(_save_scholar_works(p, linked))
+    # Google Scholar FIRST for every professor. find_profile() itself tries an official-page
+    # Scholar link before spending a web-search query.
+    from services import scholar
+    try:
+        scholar_fields, scholar_reason = scholar.match_via_scholar(p, inst, inst_oid, names_match)
+    except fx.RateLimited:
+        raise
+    except Exception as e:
+        log(f"Scholar step failed for {p['name']}: {str(e)[:120]}")
+        scholar_fields, scholar_reason = {}, ""
 
-    # If the official page did not settle identity, publications extracted from that same page
-    # are tried before the weaker name+institution fallback inside match().
-    if not (fields.get("openalex_author_id") or p.get("openalex_author_id")) and fields.get("match_status") != "SCHOLAR":
+    if not scholar_fields and not scholar_reason:
+        fields.update(pipeline_done=False, identity_retry_after=time.time() + 90)
+        fields["search_text"] = st.search_text_for(dict(p, **fields)) + " | " + st.normalize_name(
+            inst.get("city", "") + " " + inst.get("state", ""))
+        st.update_professor(p["id"], fields)
+        return f"{p['name']} ({inst['name']}): Google Scholar temporarily unavailable; retrying later."
+
+    fields.update(scholar_fields)
+    scholar_settled = False
+    if scholar_fields.get("match_status") == "MATCHED":
+        checked = gated(dict(p, **fields), scholar_fields)
+        fields.update(checked)
+        scholar_settled = checked.get("match_status") == "MATCHED"
+    elif scholar_fields.get("match_status") == "SCHOLAR":
+        fields.update(_save_scholar_works(dict(p, **fields), scholar_fields))
+        scholar_settled = True
+
+    # If Scholar did not settle identity, match() tries faculty-page publication anchors before
+    # its weaker name+institution fallback.
+    if not scholar_settled:
         base = dict(p, **fields)
-        fields.update(gated(base, match(base, inst_oid)))
+        candidate = gated(base, match(base, inst_oid))
+        fields.update(candidate)
+        if candidate.get("match_status") != "MATCHED":
+            # Never let a stale author id from an older run leak through after new evidence rejects it.
+            fields["openalex_author_id"] = ""
+
         if fields.get("match_status") == "UNRESOLVED":
-            resolved = resolve_unmatched(dict(p, **fields), inst, inst_oid)
+            resolved = resolve_unmatched(dict(p, **fields), inst, inst_oid, done=["scholar"])
             if resolved is None:
                 fields.update(pipeline_done=False, identity_retry_after=time.time() + 90)
                 fields["search_text"] = st.search_text_for(dict(p, **fields)) + " | " + st.normalize_name(
                     inst.get("city", "") + " " + inst.get("state", ""))
                 st.update_professor(p["id"], fields)
                 return f"{p['name']} ({inst['name']}): identity source temporarily unavailable; retrying later."
+            if resolved.get("match_status") != "MATCHED":
+                resolved = dict(resolved, openalex_author_id="")
             fields.update(gated(dict(p, **fields), resolved))
 
-    author = fields.get("openalex_author_id") or p.get("openalex_author_id")
+    # Respect an explicit clear from this pass; do not fall back to p.openalex_author_id.
+    author = fields["openalex_author_id"] if "openalex_author_id" in fields else p.get("openalex_author_id")
     n_papers = len(fields.get("paper_ids") or p.get("paper_ids") or [])
     grants = p.get("grants") or []
     if author:
@@ -1910,7 +1931,6 @@ def process_professor(p, inst):
         st.collapse_author_duplicates(inst["id"], merged["openalex_author_id"])
     return f"{p['name']} ({inst['name']}): {merged.get('match_status')}, {n_papers} papers" + (
         f", {len(grants)} grants" if GRANTS() else "")
-
 
 # ---------------- scheduler ----------------
 
