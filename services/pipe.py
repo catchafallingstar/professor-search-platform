@@ -853,6 +853,8 @@ def _save_scholar_works(p, got):
     from services import facultypage as fpg
     ids = []
     for x in got.pop("scholar_papers", []):
+        if _NOT_A_PAPER.search((x.get("title") or "").strip()):
+            continue
         pid = fpg.item_id("GS", p["id"], x["title"])
         st.upsert_paper({"openalex_work_id": pid, "doi": "", "title": x["title"], "publication_year": x["year"],
                          "publication_date": f"{x['year']}-01-01" if x["year"] else "", "source_name": x["venue"][:200],
@@ -1413,7 +1415,9 @@ def scholar_backfill_one():
 
 _NOT_A_PAPER = re.compile(
     r"^(data for |dataset|supplementa|supporting information|additional file|figure s?\d|table s?\d|"
-    r"video s?\d|replication (data|package|files)|source data|peer review file|reporting summary)", re.I)
+    r"video s?\d|replication (data|package|files)|source data|peer review file|reporting summary|"
+    r"author response|reviewer response|response to reviewers?|decision letter|editorial decision|"
+    r"publisher correction|correction\b|erratum\b|corrigendum\b|retraction\b|expression of concern)", re.I)
 
 
 def _norm_title(t):
