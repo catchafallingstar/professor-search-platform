@@ -141,22 +141,33 @@ def extract_faculty(url, dept, inst):
     return out, f"ai:{o.model_used}", None
 
 
-def more_from_profiles(url, dept, rows, max_pages=200):
-    """A listing that pages with JavaScript only shows its first screen when read. If the page is
-    paginated, read every profile page under the same folder from the sitemap instead: the name
-    comes from the page title, the title (Professor...) from the text after the name."""
+def more_from_profiles(url, dept, rows, max_pages=250):
+    """Expand a directory with profile URLs from the university sitemap.
+
+    We no longer require a visible numbered paginator. Some React/JS directories expose only the
+    first screen to the reader but give no "Next" text at all. If the sitemap has substantially
+    more direct profile children than the listing produced, expand them anyway.
+    """
     from services import discovery
-    page = fx.fetch_page(url)
-    if not page.get("ok") or not discovery.looks_paginated(page.get("text", "")):
+    page = fx.fetch_page_cached(url)
+    if not page.get("ok"):
         return []
     have = {st.normalize_name(r["name"]) for r in rows}
-    have_urls = {r.get("profile_url") for r in rows}
+    have_urls = {r.get("profile_url") for r in rows if r.get("profile_url")}
+    profiles = [u for u in discovery.sitemap_profiles(url, limit=max_pages) if u not in have_urls]
+    if not profiles:
+        return []
+    paginated = discovery.looks_paginated(page.get("text", ""))
+    # A sitemap with just one or two incidental sibling pages is not evidence of hidden pagination.
+    if not paginated and len(profiles) <= max(len(rows) + 2, 5):
+        return []
+
+    log(f"{url}: expanding {len(profiles)} sitemap profile pages"
+        + (" (pagination detected)" if paginated else " (listing appears incomplete)"))
     extra = []
-    profiles = [u for u in discovery.sitemap_profiles(url) if u not in have_urls][:max_pages]
-    log(f"{url}: listing is paginated; reading {len(profiles)} profile pages from the sitemap")
-    # 8 profile pages at a time (each is one independent read; the reader is the slow part)
     from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    workers = max(2, min(8, int(os.environ.get("PROFILE_FETCH_WORKERS", "8") or 8)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         pages = list(pool.map(fx.fetch_page_cached, profiles))
     for purl, pg in zip(profiles, pages):
         if not pg.get("ok"):
@@ -166,7 +177,7 @@ def more_from_profiles(url, dept, rows, max_pages=200):
             continue
         title = title_from_page(pg.get("text", ""), name)
         if not title:
-            continue                            # staff without a professor title are skipped
+            continue
         have.add(st.normalize_name(name))
         extra.append({"name": name, "title": title, "department": dept, "profile_url": purl})
     return extra
@@ -219,8 +230,11 @@ def crawl(inst):
     try:
         from services import units as un
         fresh = st.get_institution(inst["id"]) or {}
+        unit_list = fresh.get("units") or []
         cov = fresh.get("coverage") or {}
-        st.update_institution(inst["id"], {"coverage_state": un.coverage_state(cov, st.count_professors({"institution_id": inst["id"]}))})
+        unit_list, cov = un.apply_extraction_results(unit_list, cov, report)
+        cov_state = un.coverage_state(cov, st.count_professors({"institution_id": inst["id"]}))
+        st.update_institution(inst["id"], {"units": unit_list, "coverage": cov, "coverage_state": cov_state})
     except Exception as e:
         log(f"{inst['name']}: coverage audit skipped ({str(e)[:120]})")
     st.invalidate_search()
@@ -1732,9 +1746,17 @@ def step():
                     continue
                 p = st.next_pending_professor(inst["id"])
                 if p is None:
-                    st.update_institution(inst["id"], {"pipeline_state": "DONE"})
                     st.recount(inst["id"])
-                    return f"{inst['name']}: all professors processed."
+                    fresh = st.get_institution(inst["id"]) or inst
+                    cov = fresh.get("coverage") or {}
+                    cov_state = fresh.get("coverage_state") or ""
+                    note = ""
+                    if cov_state == "PARTIAL_COVERAGE":
+                        note = (f"Faculty coverage is partial: {cov.get('readable_units', 0)}/{cov.get('units', 0)} "
+                                f"academic units yielded faculty; {len(cov.get('missing') or [])} missing directories, "
+                                f"{len(cov.get('empty_directories') or [])} unreadable/empty directories.")
+                    st.update_institution(inst["id"], {"pipeline_state": "DONE", "pipeline_note": note})
+                    return f"{inst['name']}: all imported professors processed" + ("; coverage remains partial." if note else ".")
                 msg = process_professor(p, inst)
                 if st.count_professors({"institution_id": inst["id"], "pipeline_done": False}) % 10 == 0:
                     st.recount(inst["id"])
@@ -1759,7 +1781,14 @@ def step():
                         else "No faculty directory found (sitemaps, homepage links" + (", AI guesses" if _ai() else "") + "). Add URLs in services/universities.py.")
                 st.update_institution(inst["id"], {"pipeline_state": "NO_FACULTY_FOUND", "pipeline_note": note})
                 return f"{inst['name']}: no faculty found."
-            st.update_institution(inst["id"], {"pipeline_state": "PROCESSING", "pipeline_note": ""})
+            fresh = st.get_institution(inst["id"]) or inst
+            cov = fresh.get("coverage") or {}
+            cov_state = fresh.get("coverage_state") or ""
+            note = ""
+            if cov_state == "PARTIAL_COVERAGE":
+                note = (f"Partial faculty coverage: {cov.get('readable_units', 0)}/{cov.get('units', 0)} "
+                        f"academic units currently readable.")
+            st.update_institution(inst["id"], {"pipeline_state": "PROCESSING", "pipeline_note": note})
             return f"{inst['name']}: imported {added} professors from {len(report)} directory pages."
         if limited:
             raise fx.RateLimited(fx.rate_limit_status()["message"])
