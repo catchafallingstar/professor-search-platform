@@ -164,7 +164,7 @@ PROF_DEFAULTS = {
 
 
 def prof_id(inst_id, name):
-    return f"{inst_id}:{nu.normalize_person_name(name)}"
+    return f"{inst_id}:{nu.storage_key(name)}"
 
 
 def search_text_for(p):
@@ -237,7 +237,7 @@ def add_professor(inst, name, title, department, faculty_url):
     doc = dict(PROF_DEFAULTS)
     ts = now_iso()
     doc.update(
-        _id=pid, name=name.strip(), normalized_name=nu.normalize_person_name(name), title=title or "Professor",
+        _id=pid, name=name.strip(), normalized_name=nu.storage_key(name), title=title or "Professor",
         department=department, institution_id=inst["id"], university=inst["name"],
         faculty_url=faculty_url, created_at=ts, updated_at=ts,
     )
