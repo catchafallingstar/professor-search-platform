@@ -117,6 +117,38 @@ def publication_pages(text, limit=4):
     return out
 
 
+DEPT_HINT_WORDS = re.compile(
+    r"\b(engineering|science|sciences|physics|chemistry|biology|mathematics|statistics|economics|"
+    r"psychology|sociology|history|english|philosophy|journalism|media|communication|information|"
+    r"computing|computer|business|education|law|medicine|nursing|art|music|language|literature|"
+    r"political|public policy|robotics|design)\b", re.I
+)
+
+
+def department_hint(text, name=""):
+    """Best nearby academic-unit label on a single professor profile.
+
+    Only a short window after the person's heading is considered, so site-wide navigation does
+    not overwrite a good department. This repairs generic crawl labels such as "Cis".
+    """
+    t = text or ""
+    start = 0
+    if name:
+        # The page may include credentials after the heading; matching the displayed clean name
+        # is enough to find the local profile section.
+        low, needle = t.lower(), name.lower()
+        hit = low.find(needle)
+        if hit >= 0:
+            start = hit
+    window = t[start:start + 1800]
+    for m in LINK.finditer(window):
+        label = _clean(m.group(1))
+        if (3 <= len(label) <= 100 and DEPT_HINT_WORDS.search(label)
+                and not re.search(r"google scholar|publications?|home ?page|website|email", label, re.I)):
+            return label
+    return ""
+
+
 def identity_signals(text, base_url="", name=""):
     """Scan the ENTIRE fetched profile text for deterministic identity evidence.
 
