@@ -320,7 +320,8 @@ def match(p, inst_oid):
     if not inst_oid:
         return {"match_status": "UNRESOLVED", "match_note": "Institution not found in OpenAlex."}
     anchors_present = bool(p.get("anchors"))
-    current = [a for a in fx.search_authors(p["name"], inst_oid)
+    search_name = nu.clean_person_name(p["name"])
+    current = [a for a in fx.search_authors(search_name, inst_oid)
                if names_match_strict(p["name"], a.get("display_name") or "")]
     cands = current
     note = "Matched on exact-compatible name + current institution (one clear OpenAlex author)."
@@ -330,7 +331,7 @@ def match(p, inst_oid):
     if p.get("orcid"):
         pool = list(cands)
         if not pool:
-            pool = [a for a in fx.search_authors(p["name"], "")
+            pool = [a for a in fx.search_authors(search_name, "")
                     if names_match_strict(p["name"], a.get("display_name") or "")]
         by = [a for a in pool if _sid(a.get("orcid")) == p["orcid"]]
         if len(by) == 1:
@@ -340,7 +341,7 @@ def match(p, inst_oid):
     # Historical affiliation is useful evidence for the identity ladder, but not enough to
     # auto-attach papers by itself. People move, and this was a source of stale-institution errors.
     if not cands and not orcid_match:
-        history = [a for a in fx.search_authors(p["name"], "")
+        history = [a for a in fx.search_authors(search_name, "")
                    if names_match_strict(p["name"], a.get("display_name") or "") and _affiliated(a, inst_oid)]
         if history:
             return {"match_status": "UNRESOLVED", "match_method": "",
@@ -650,7 +651,7 @@ def openalex_candidates(p, limit=5):
     """Real OpenAlex author records with this name (any institution), each with its institution
     history, top topics and a few recent work titles - the only options the local model may pick."""
     out = []
-    for a in fx.search_authors(p["name"], "")[:6]:
+    for a in fx.search_authors(nu.clean_person_name(p["name"]), "")[:6]:
         if not names_match(p["name"], a.get("display_name") or ""):
             continue
         insts = [i.get("display_name") for i in a.get("last_known_institutions") or [] if i.get("display_name")]
