@@ -55,3 +55,19 @@ Eugene P. Wigner Professor
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MetadataRegressionTests(unittest.TestCase):
+    def test_page_headings_are_not_departments(self):
+        from services import store as st
+        for label in ("Faculty Directory", "People Directory", "Index.Html", "Www", "All", "Group", "Apply", "About"):
+            with self.subTest(label=label):
+                self.assertEqual(st.clean_department(label), "")
+        self.assertEqual(st.clean_department("Engineering"), "Engineering")
+        self.assertEqual(st.clean_department("Law"), "Law")
+
+    def test_ece_uses_engineering_field_family_before_generic_computer(self):
+        from services import pipe
+        allowed = pipe._dept_fields("Electrical and Computer Engineering")
+        self.assertIn("Materials Science", allowed)
+        self.assertIn("Physics and Astronomy", allowed)
