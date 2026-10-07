@@ -15,7 +15,8 @@ sv import from ..services.queue { list_staff_review, resolve_staff_review, reque
 
 glob RESULT_LABELS: dict[str, str] = {
     "FIXED": "Fixed", "FIXED_MATCHED": "Fixed: OpenAlex identity matched", "FIXED_SCHOLAR": "Fixed: Google Scholar profile",
-    "FIXED_FACULTY_PAGE": "Fixed: publications from faculty page", "NO_RESULT_FOUND": "Retried: still no result",
+    "FIXED_FACULTY_PAGE": "Fixed: publications from faculty page", "FIXED_DIRECTORY": "Fixed: faculty directory rediscovered",
+    "FIXED_FACULTY_LIST": "Fixed: faculty list extracted", "NO_RESULT_FOUND": "Retried: still no result",
     "RETRY_LATER": "Waiting: a step will run again shortly", "PAGE_UNREACHABLE": "Retried: page still blocked",
     "STILL_FAILING": "Retried: still failing"
 };
