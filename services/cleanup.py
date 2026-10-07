@@ -250,7 +250,9 @@ def author_duplicates():
             continue
         compatible = all(nu.names_match_strict(a.get("name", ""), b.get("name", ""))
                          for i, a in enumerate(rows) for b in rows[i + 1:])
-        if compatible:
+        orcids = {r.get("orcid") for r in rows if r.get("orcid")}
+        orcid_corroborated = len(orcids) == 1 and all(r.get("orcid") for r in rows)
+        if compatible or orcid_corroborated:
             before = d.professors.count_documents({"institution_id": iid, "openalex_author_id": aid})
             st.collapse_author_duplicates(iid, aid)
             after = d.professors.count_documents({"institution_id": iid, "openalex_author_id": aid})
