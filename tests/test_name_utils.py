@@ -18,4 +18,5 @@ def test_real_name_tokens_are_preserved():
 def test_initials_can_expand_but_different_given_names_do_not_collapse():
     assert nu.names_match_strict("A.J. Bauer", "A. J. Bauer")
     assert nu.names_match_strict("A.J. Bauer", "Andrew J. Bauer")
+    assert nu.names_match_strict("A. B. Balantekin", "A. Baha Balantekin")
     assert not nu.names_match_strict("Licheng Liu", "Lihong Liu")
