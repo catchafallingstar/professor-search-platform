@@ -1905,6 +1905,8 @@ def process_professor(p, inst):
     fields["search_text"] = st.search_text_for(merged) + " | " + st.normalize_name(
         inst.get("city", "") + " " + inst.get("state", ""))
     st.update_professor(p["id"], fields)
+    if merged.get("match_status") == "MATCHED" and merged.get("openalex_author_id"):
+        st.collapse_author_duplicates(inst["id"], merged["openalex_author_id"])
     return f"{p['name']} ({inst['name']}): {merged.get('match_status')}, {n_papers} papers" + (
         f", {len(grants)} grants" if GRANTS() else "")
 
