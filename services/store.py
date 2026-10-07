@@ -155,7 +155,7 @@ def count_institutions(query=None):
 
 PROF_DEFAULTS = {
     "name": "", "normalized_name": "", "title": "", "department": "", "institution_id": "",
-    "university": "", "faculty_url": "", "lab_url": "", "personal_url": "", "openalex_author_id": "",
+    "university": "", "faculty_url": "", "directory_url": "", "lab_url": "", "personal_url": "", "openalex_author_id": "",
     "orcid": "", "match_status": "PENDING", "match_method": "", "match_note": "", "pipeline_done": False,
     "profile_extracted": False, "anchors": [], "paper_ids": [], "subfields": [], "fields": [],
     "grants": [], "grant_count": 0, "hiring": None, "has_hiring": False, "search_text": "",
@@ -223,8 +223,12 @@ def clean_department(department):
     return "" if _HEADING_DEPTS.match(d) else d
 
 
-def add_professor(inst, name, title, department, faculty_url):
+def add_professor(inst, name, title, department, faculty_url, directory_url=""):
     """Insert a crawled professor; on a re-crawl, repair weak old metadata in-place.
+
+    faculty_url must be the person's own profile. directory_url records the listing page that
+    discovered them; the two are deliberately separate so a college-wide directory is never
+    mistaken for a professor's personal faculty page.
 
     This matters after directory-discovery improvements: a row originally stored with a generic
     department such as "Cis" / "Faculty Directory" should learn the specific department when the
@@ -243,7 +247,8 @@ def add_professor(inst, name, title, department, faculty_url):
     doc.update(
         _id=pid, name=name.strip(), normalized_name=nu.storage_key(name), title=title or "Professor",
         department=department, institution_id=inst["id"], university=inst["name"],
-        faculty_url=faculty_url, created_at=ts, updated_at=ts,
+        faculty_url=faculty_url or "", directory_url=directory_url or "",
+        created_at=ts, updated_at=ts,
     )
     doc["search_text"] = search_text_for(doc) + " | " + normalize_name(inst.get("city", "") + " " + inst.get("state", ""))
     try:
@@ -264,6 +269,8 @@ def add_professor(inst, name, title, department, faculty_url):
             patch["title"] = new_title
         if faculty_url and not old.get("faculty_url"):
             patch["faculty_url"] = faculty_url
+        if directory_url and not old.get("directory_url"):
+            patch["directory_url"] = directory_url
         if patch:
             merged = dict(old, **patch)
             patch["search_text"] = search_text_for(merged) + " | " + normalize_name(
