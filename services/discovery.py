@@ -15,6 +15,8 @@ import urllib.parse
 import urllib.request
 import gzip
 import io
+import html
+import threading
 
 from services import fetchers as fx
 
@@ -135,8 +137,13 @@ def _get(url, timeout=20):
     return raw.decode("utf-8", "ignore")
 
 
-def sitemap_candidates(base, dom, limit=4000):
-    """Faculty-like URLs from robots.txt sitemaps and common sitemap locations."""
+_SITEMAP_CACHE = {}
+_SITEMAP_LOCK = threading.Lock()
+_SITEMAP_TTL = 3600
+
+
+def _sitemap_seeds(base):
+    """Sitemap entry points advertised by robots.txt plus common CMS locations."""
     maps = []
     try:
         for line in _get(base + "/robots.txt").splitlines():
@@ -144,67 +151,141 @@ def sitemap_candidates(base, dom, limit=4000):
                 maps.append(line.split(":", 1)[1].strip())
     except Exception:
         pass
-    maps += [base + p for p in ("/sitemap.xml", "/sitemap_index.xml", "/wp-sitemap.xml")]
-    seen, urls = set(), []
-    while maps and len(seen) < 12:
-        m = maps.pop(0)
-        if m in seen:
+    maps += [base + p for p in ("/sitemap.xml", "/sitemap_index.xml", "/sitemap-index.xml", "/wp-sitemap.xml")]
+    return list(dict.fromkeys(maps))
+
+
+def sitemap_urls(base, dom, max_maps=40, max_urls=50000, ttl=_SITEMAP_TTL):
+    """Return all same-university page URLs reachable through sitemap indexes.
+
+    Many universities expose only a sitemap *index* at /sitemap.xml. The old discovery code read
+    that first file but followed only child sitemap names containing words such as "faculty" or
+    "page", which silently missed most colleges. This walks every on-domain child sitemap with a
+    hard cap and caches the result for the rest of the crawl.
+    """
+    base = (base or "").rstrip("/")
+    key = (base, dom)
+    now = time.time()
+    with _SITEMAP_LOCK:
+        hit = _SITEMAP_CACHE.get(key)
+        if hit and now - hit[0] < ttl:
+            return list(hit[1])
+
+    maps = _sitemap_seeds(base)
+    seen_maps, seen_urls, urls = set(), set(), []
+    while maps and len(seen_maps) < max_maps and len(urls) < max_urls:
+        sm = maps.pop(0)
+        if not sm or sm in seen_maps:
             continue
-        seen.add(m)
+        seen_maps.add(sm)
         try:
-            xml = _get(m)
+            text = _get(sm)
         except Exception:
+            text = fx.fetch_page_cached(sm).get("text", "")
+        if not text:
             continue
-        for loc in re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", xml)[:limit]:
-            if loc.endswith((".xml", ".xml.gz")):
-                if re.search(r"page|people|faculty|profile|post", loc, re.I):
+
+        locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text, flags=re.I)
+        if not locs:
+            # Reader fallbacks may strip XML tags but preserve URLs.
+            locs = re.findall(r"https?://[^\s<>\"')\]]+", text)
+        for loc in locs:
+            loc = html.unescape(loc.strip()).split("#")[0]
+            if not loc.startswith("http"):
+                continue
+            path = urllib.parse.urlparse(loc).path.lower()
+            if path.endswith((".xml", ".xml.gz")):
+                if on_domain(loc, dom) and loc not in seen_maps:
                     maps.append(loc)
                 continue
-            p = urllib.parse.urlparse(loc).path.lower()
-            if on_domain(loc, dom) and not is_news_like(loc) and re.search(r"/(faculty|people|directory)(/|$|\.html)", p) and p.count("/") <= 4:
+            if on_domain(loc, dom) and loc not in seen_urls:
+                seen_urls.add(loc)
                 urls.append(loc)
+                if len(urls) >= max_urls:
+                    break
+
+    with _SITEMAP_LOCK:
+        _SITEMAP_CACHE[key] = (now, tuple(urls))
+        if len(_SITEMAP_CACHE) > 200:
+            oldest = min(_SITEMAP_CACHE, key=lambda k: _SITEMAP_CACHE[k][0])
+            _SITEMAP_CACHE.pop(oldest, None)
+    return urls
+
+
+def sitemap_candidates(base, dom, limit=4000):
+    """Faculty-like URLs from the university's full recursive sitemap tree."""
+    urls = []
+    for loc in sitemap_urls(base, dom, max_urls=max(limit * 8, 10000)):
+        p = urllib.parse.urlparse(loc).path.lower()
+        if (not is_news_like(loc)
+                and re.search(r"/(faculty|people|directory|professors?|researchers?)(/|$|\.(?:html?|php|aspx))", p)
+                and p.count("/") <= 7):
+            urls.append(loc)
+            if len(urls) >= limit:
+                break
     return list(dict.fromkeys(urls))
 
 
+_PROFILE_SKIP = re.compile(
+    r"\b(index|default|home|faculty|staff|directory|people|about|contact|news|events?|calendar|"
+    r"resources?|forms?|documents?|policies|handbook|advising|admissions?|programs?|degrees?)\b", re.I
+)
+
+
+def _directory_prefix(path):
+    path = path or "/"
+    clean = path.rstrip("/")
+    leaf = clean.rsplit("/", 1)[-1].lower()
+    # /department/faculty and /department/people are directory folders themselves.
+    if path.endswith("/") or (re.search(r"(faculty|people|directory|staff)", leaf) and "." not in leaf):
+        return clean + "/"
+    # /department/faculty/index.php -> profiles are siblings of index.php.
+    return clean.rsplit("/", 1)[0] + "/"
+
+
+def _profileish_path(path, prefix):
+    if not path.startswith(prefix) or path == prefix:
+        return False
+    rel = path[len(prefix):].strip("/")
+    if not rel or rel.count("/") > 1:
+        return False
+    leaf = rel.split("/")[-1]
+    stem = re.sub(r"\.(php|html?|aspx)$", "", leaf, flags=re.I)
+    if not stem or _PROFILE_SKIP.search(stem.replace("-", " ").replace("_", " ")):
+        return False
+    # Typical profile forms: d-abdallah.php, jane-smith/, jane_smith.html. A plain surname is
+    # allowed only when it is a direct child; the profile page itself is still title-validated.
+    return bool(re.search(r"[A-Za-z]", stem))
+
+
 def sitemap_profiles(directory_url, limit=400):
-    """Profile pages that live under a directory page's folder, taken from the site's sitemaps.
-    For listings that load names with JavaScript in pages ("1 2 3 ... 12 Next"), where reading the
-    page only ever returns the first screen (e.g. emich.edu/coe/faculty-staff/index.php)."""
+    """Profile pages under a faculty directory, from the site's complete recursive sitemaps."""
     p = urllib.parse.urlparse(directory_url)
-    folder = p.path.rsplit("/", 1)[0] + "/"
-    dom = domain_of(f"{p.scheme}://{p.netloc}")
-    base = f"{p.scheme}://{p.netloc}"
-    maps = []
-    try:
-        for line in fx.fetch_page(base + "/robots.txt").get("text", "").splitlines():
-            if line.lower().startswith("sitemap:"):
-                maps.append(line.split(":", 1)[1].strip())
-    except Exception:
-        pass
-    maps += [base + "/sitemap.xml"]
-    out, seen = [], set()
-    for m in list(dict.fromkeys(maps))[:6]:
-        if m in seen:
-            continue
-        seen.add(m)
-        text = ""
-        try:
-            text = _get(m)
-        except Exception:
-            text = fx.fetch_page(m).get("text", "")          # bot-protected sites: via the reader
-        for loc in re.findall(r"https?://[^\s<>\"')\]]+", text):
-            lp = urllib.parse.urlparse(loc)
-            if (on_domain(loc, dom) and lp.path.startswith(folder) and lp.path != p.path
-                    and not lp.path.endswith(("index.php", "index.html", "/")) and lp.path.count("/") == folder.count("/")):
-                out.append(loc.split("#")[0])
-    return list(dict.fromkeys(out))[:limit]
+    dom = domain_of("{}://{}".format(p.scheme, p.netloc))
+    base = "{}://{}".format(p.scheme or "https", p.netloc)
+    prefix = _directory_prefix(p.path)
+    out = []
+    for loc in sitemap_urls(base, dom):
+        lp = urllib.parse.urlparse(loc)
+        if (lp.path != p.path and _profileish_path(lp.path, prefix)
+                and not is_news_like(loc)):
+            out.append(loc.split("#")[0])
+            if len(out) >= limit:
+                break
+    return list(dict.fromkeys(out))
 
 
 def looks_paginated(page_text):
-    """True when a listing shows more pages than were read: numbered page links / "Next page"."""
+    """True when a listing indicates more people than the fetched page currently exposes."""
     t = page_text or ""
     nums = [int(n) for n in re.findall(r"\[(\d{1,3})\]\([^)]*\)", t)]
-    return bool(re.search(r"\[next( page)?\]", t, re.I)) or (len(nums) >= 3 and max(nums) >= 3)
+    if bool(re.search(r"\[(next( page)?|more)\]", t, re.I)) or (len(nums) >= 3 and max(nums) >= 3):
+        return True
+    return bool(re.search(
+        r"\b(load more|show more|view more|next page|page\s+2\b|"
+        r"showing\s+\d+\s*(?:-|–|to)\s*\d+\s+of\s+\d+|"
+        r"\d+\s*(?:-|–|to)\s*\d+\s+of\s+\d+)\b", t, re.I
+    ))
 
 
 def validate(url, dept=""):
