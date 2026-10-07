@@ -37,7 +37,17 @@ _NOT_UNIT = re.compile(r"\b(admission|apply|alumni|news|event|giving|donat|caree
                        r"forms?|documents?|resources?|center for|writing center|resource center|"
                        r"housing|dining|parking|visit|tour|student life|graduate school application|online|"
                        r"continuing|summer|camp|k-12|high school|law enforcement|police|graduate school|"
-                       r"graduate college|graduate studies|honors college|honors program|extended|professional studies)\b", re.I)
+                       r"graduate college|graduate studies|honors college|honors program|extended|professional studies|"
+                       r"undergraduate|graduate|majors?|minors?|degrees?|certificates?|academics?|research|faculty|staff)\b", re.I)
+
+# Common department labels on college pages omit the word "Department" entirely.
+_PLAIN_ACADEMIC = re.compile(
+    r"^(accounting|africology|anthropology|architecture|art|arts|astronomy|biology|biochemistry|"
+    r"business|chemistry|communication|communications|computer science|computing|criminology|"
+    r"data science|economics|education|engineering|english|finance|geography|geology|history|"
+    r"information security|information systems|linguistics|management|marketing|mathematics|math|"
+    r"music|nursing|philosophy|physics|political science|psychology|public health|public policy|"
+    r"sociology|statistics|theatre|theater|world languages|women'?s and gender studies)$", re.I)
 _LINK = re.compile(r"\[([^\]]{2,120})\]\((https?://[^)\s]+)\)")
 HUB_PATHS = ("/academics", "/academics/colleges", "/academics/colleges-schools", "/academics/schools-colleges",
              "/colleges", "/schools", "/colleges-and-schools", "/academics/departments", "/departments",
@@ -59,9 +69,11 @@ def unit_type(name):
     return "department"
 
 
-def looks_like_unit(name):
+def looks_like_unit(name, allow_plain=False):
     n = _clean(name)
-    return bool(n) and len(n) <= 100 and not _NOT_UNIT.search(n) and bool(_UNIT_NAME.match(n))
+    if not n or len(n) > 100 or _NOT_UNIT.search(n):
+        return False
+    return bool(_UNIT_NAME.match(n)) or bool(allow_plain and _PLAIN_ACADEMIC.match(n))
 
 
 def _key(name):
@@ -80,9 +92,9 @@ class Map:
         for u in inst.get("units") or []:
             self.units[_key(u["name"])] = dict(u)
 
-    def add(self, name, url, parent="", method=""):
+    def add(self, name, url, parent="", method="", allow_plain=False):
         name = _clean(name)
-        if not looks_like_unit(name) or len(self.units) >= MAX_UNITS:
+        if not looks_like_unit(name, allow_plain=allow_plain) or len(self.units) >= MAX_UNITS:
             return False
         if url and not dsc.on_domain(url, self.dom):
             url = ""
@@ -157,7 +169,7 @@ def pass_departments(m, log=print):
         for page in pages[:UNIT_BUDGET]:
             for text, url in _links(page):
                 if dsc.on_domain(url, m.dom) and unit_type(text) in ("department", "school", "division", "program") \
-                        and m.add(text, url, parent=u["name"], method="unit_page"):
+                        and m.add(text, url, parent=u["name"], method="unit_page", allow_plain=True):
                     new += 1
             time.sleep(0.5)
         u["expanded"] = True
@@ -233,51 +245,42 @@ _PERSON_URL = re.compile(r"/[a-z]{1,3}[-_][a-z][\w-]+\.(php|html?|aspx)$|/[a-z]+
 
 
 def pass_sitemap_folders(m, known_dirs, log=print):
-    """PASS 4 (sitemap): every folder of the form /<unit>/faculty/ (or /people/, /faculty-staff/) that
-    holds profile pages in the university's sitemap is a faculty source, even when no navigation
-    page links to it (accordions, JS menus). The unit is named from its own landing page title."""
-    base = m.base
-    text = ""
-    for sm in ("/sitemap.xml", "/sitemap_index.xml"):
-        try:
-            text = dsc._get(base + sm)
-        except Exception:
-            text = fx.fetch_page_cached(base + sm).get("text", "")
-        if len(text) > 500:
-            break
+    """PASS 4: infer faculty sources from every profile-heavy folder in recursive sitemaps."""
     folders = {}
-    for loc in re.findall(r"https?://[^\s<>\"')\]]+", text):
-        if not dsc.on_domain(loc, m.dom):
-            continue
+    for loc in dsc.sitemap_urls(m.base, m.dom):
         path = urllib.parse.urlparse(loc).path
         mm = _FAC_FOLDER.match(path)
-        if mm and path.count("/") <= mm.group(0).count("/") + 1 and not _NOT_FAC_FOLDER.search(mm.group(0)):
-            folders.setdefault(mm.group(0), [0, 0])
-            folders[mm.group(0)][0] += 1
-            if _PERSON_URL.search(path):            # looks like a person page (j-smith.php, jane-smith/)
-                folders[mm.group(0)][1] += 1
+        if not mm or _NOT_FAC_FOLDER.search(mm.group(0)):
+            continue
+        # Only direct children of the faculty/people folder are treated as profile candidates.
+        if path.count("/") > mm.group(0).count("/") + 1:
+            continue
+        folders.setdefault(mm.group(0), [0, 0])
+        folders[mm.group(0)][0] += 1
+        if _PERSON_URL.search(path):
+            folders[mm.group(0)][1] += 1
+
     new = 0
     for folder, (n, persons) in sorted(folders.items(), key=lambda x: -x[1][0]):
         if n < 3 or persons < 3:
-            continue                                # a real faculty folder has several PERSON pages
-        listing = f"{base}{folder}"
+            continue
+        listing = f"{m.base}{folder}"
         if any(k.startswith(listing.rstrip("/")) for k in known_dirs):
             continue
         unit_root = folder[: -len(folder.rstrip("/").rsplit("/", 1)[-1]) - 1] or "/"
-        page = fx.fetch_page_cached(base + unit_root)
+        page = fx.fetch_page_cached(m.base + unit_root)
         title = re.split(r"\s+[|\-–]\s+", (page.get("title") or "").strip())[0].strip()
         uni_word = (m.inst.get("name") or "").split()[0].lower()
         bad = not title or len(title) >= 80 or title.lower().startswith(uni_word) or title.lower() in ("home", "index")
         name = unit_root.strip("/").split("/")[-1].replace("-", " ").title() if bad else title
-        # "Sociology, Anthropology and Criminology at Eastern Michigan University" -> drop the tail
         name = re.split(r"\s+at\s+" + re.escape(uni_word), name, flags=re.I)[0].strip()
         if _NOT_UNIT.search(name):
             continue
         k = _key(name)
         if k not in m.units:
-            m.units[k] = {"name": name, "type": unit_type(name) if looks_like_unit(name) else "department",
-                          "url": base + unit_root, "parent": "", "status": "PENDING", "directories": [],
-                          "found_via": "sitemap_folder", "pages_used": 0}
+            m.units[k] = {"name": name, "type": unit_type(name), "url": m.base + unit_root, "parent": "",
+                          "status": "PENDING", "directories": [], "found_via": "sitemap_folder",
+                          "pages_used": 0}
         u = m.units[k]
         if u["status"] != "DIRECTORY_FOUND":
             u["directories"] = [listing]
@@ -285,7 +288,7 @@ def pass_sitemap_folders(m, known_dirs, log=print):
             u["profile_count"] = n
             known_dirs.add(listing.rstrip("/"))
             new += 1
-    log(f"{m.inst['name']}: {new} faculty folders found in the sitemap")
+    log(f"{m.inst['name']}: {new} faculty folders found in recursive sitemaps")
     return new
 
 
@@ -324,14 +327,44 @@ def build(inst, existing_dirs=(), log=print):
     with_dir = [u for u in teaching if u["status"] == "DIRECTORY_FOUND"]
     coverage = {"units": len(teaching), "with_directory": len(with_dir),
                 "missing": [u["name"] for u in teaching if u["status"] != "DIRECTORY_FOUND"][:60],
+                "empty_directories": [], "readable_units": 0,
                 "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     return units, dirs, coverage
+
+
+def apply_extraction_results(units, coverage, report):
+    """Fold the actual faculty extraction outcome back into coverage.
+
+    A directory URL existing is not sufficient evidence of coverage: bot checks and JS-only
+    listings can yield zero people. Those units remain partial until a crawl can read them.
+    """
+    cov = dict(coverage or {})
+    by_url = {r.get("url", "").rstrip("/"): r for r in (report or [])}
+    empty, readable = [], 0
+    for u in units or []:
+        if u.get("type") not in ("department", "school", "division", "program"):
+            continue
+        dirs = u.get("directories") or []
+        results = [by_url.get(x.rstrip("/")) for x in dirs if by_url.get(x.rstrip("/"))]
+        found = max([int(r.get("found", 0)) for r in results] or [0])
+        u["faculty_found"] = found
+        u["extraction_status"] = "READABLE" if found > 0 else ("EMPTY_OR_BLOCKED" if dirs else "NO_DIRECTORY")
+        if found > 0:
+            readable += 1
+        elif dirs:
+            empty.append(u.get("name", ""))
+    cov["readable_units"] = readable
+    cov["empty_directories"] = [x for x in empty if x][:60]
+    cov["checked_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return units, cov
 
 
 def coverage_state(cov, n_professors):
     """University state from coverage: discovery failed / partial / complete."""
     if not cov or cov.get("units", 0) == 0:
         return "DISCOVERY_FAILED" if n_professors == 0 else "UNMAPPED"
-    if cov["with_directory"] < cov["units"]:
+    if cov.get("with_directory", 0) < cov.get("units", 0):
+        return "PARTIAL_COVERAGE"
+    if cov.get("empty_directories"):
         return "PARTIAL_COVERAGE"
     return "COMPLETE"
