@@ -19,6 +19,8 @@ CREDENTIAL_KEYS = {
     "pmhnpbc", "dcsw", "lcsw", "cdp", "dma", "ofs", "sj", "std", "ssl", "rtr", "mha",
     "msph", "mphil", "mfa", "bfa", "dnp", "aprn", "np", "pmp", "mpp", "cph", "ocn", "cissp", "frcp", "facs",
     "fache", "rd", "ld", "otd", "otr", "rph", "bsee", "msee", "meng", "beng", "msn", "bsn",
+    "ssw", "lmsw", "lmft", "lpcs", "cfre", "psyd", "mpa", "mls", "mlis", "mslis", "msed",
+    "macc", "mcs", "mem", "mps", "cfa", "cfp", "rdn", "bcbad", "bcba", "crc", "ccrc",
 }
 GENERATION_KEYS = {"jr", "sr", "ii", "iii", "iv", "v"}
 HONORIFICS = {"dr", "dr.", "prof", "prof.", "professor"}
