@@ -16,6 +16,7 @@ import re
 import urllib.parse
 
 from services import fetchers as fx
+from services import name_utils as nu
 
 PUB_HEAD = re.compile(r"(?im)^\s*(?:\*\*|#+\s*)?\s*((?:selected\s+|recent\s+|book\s+|other\s+)?(?:publications|books|selected works|works|writings|articles|translations)\s*:?)\s*(?:\*\*)?\s*:?\s*$")
 ANY_HEAD = re.compile(r"(?m)^\s*(?:\*\*[^*\n]{2,60}\*\*:?|#+\s+\S.*|[A-Z][A-Za-z &/]{2,40}:)\s*$")
@@ -194,7 +195,8 @@ def identity_excerpt(text, limit=18000):
 
 def linked_pages(text, name, limit=2):
     """Personal / lab pages the faculty page links to (by link text or by the professor's surname in the URL)."""
-    last = (name.split() or [""])[-1].lower()
+    parts = nu.name_tokens(name)
+    last = (parts or [""])[-1].lower()
     out = []
     for m in LINK.finditer(text):
         label, url = m.group(1), m.group(2)
