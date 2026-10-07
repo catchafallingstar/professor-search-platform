@@ -224,8 +224,12 @@ def clean_department(department):
 
 
 def add_professor(inst, name, title, department, faculty_url):
-    """Insert a newly crawled professor; existing ones are left untouched. Returns True if new.
-    Role titles / page headings scraped as names are rejected (returns False)."""
+    """Insert a crawled professor; on a re-crawl, repair weak old metadata in-place.
+
+    This matters after directory-discovery improvements: a row originally stored with a generic
+    department such as "Cis" / "Faculty Directory" should learn the specific department when the
+    same professor is seen again.
+    """
     from pymongo.errors import DuplicateKeyError
     if not looks_like_person(name):
         return False
@@ -246,6 +250,25 @@ def add_professor(inst, name, title, department, faculty_url):
         db().professors.insert_one(doc)
         return True
     except DuplicateKeyError:
+        old = db().professors.find_one({"_id": pid}) or {}
+        patch = {}
+        old_dept = " ".join((old.get("department") or "").split())
+        new_dept = " ".join((department or "").split())
+        old_generic = not clean_department(old_dept)
+        # Short site/acronym labels ("Cis", "Cse") are also weaker than a real department name.
+        if new_dept and (not old_dept or old_generic or (len(old_dept) <= 5 and len(new_dept) > len(old_dept))):
+            patch["department"] = new_dept
+        old_title = (old.get("title") or "").strip()
+        new_title = (title or "").strip()
+        if new_title and (not old_title or (old_title.lower() == "professor" and new_title.lower() != "professor")):
+            patch["title"] = new_title
+        if faculty_url and not old.get("faculty_url"):
+            patch["faculty_url"] = faculty_url
+        if patch:
+            merged = dict(old, **patch)
+            patch["search_text"] = search_text_for(merged) + " | " + normalize_name(
+                inst.get("city", "") + " " + inst.get("state", ""))
+            update_professor(pid, patch)
         return False
 
 
