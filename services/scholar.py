@@ -129,6 +129,10 @@ def _ids_from_pages(p):
     out = []
     if p.get("scholar_id"):
         out.append(str(p["scholar_id"]))
+    for uid in p.get("scholar_link_candidates") or []:
+        uid = str(uid)
+        if uid and uid not in out:
+            out.append(uid)
     for url in [p.get("faculty_url"), p.get("personal_url"), p.get("lab_url")]:
         if not url:
             continue
