@@ -2,9 +2,9 @@
 
     python -m services.cleanup [step ...]
     common repair after upgrading:
-      python -m services.cleanup names retry_identity profile_rescan author_duplicates states depts nonpersons paper_orphans counts
+      python -m services.cleanup names directory_profiles retry_identity profile_rescan author_duplicates states depts nonpersons paper_orphans counts
 
-    steps: names retry_identity profile_rescan author_duplicates states nonpersons depts benjaafar hiring
+    steps: names directory_profiles retry_identity profile_rescan author_duplicates states nonpersons depts benjaafar hiring
            grants identity papers paper_orphans affiliation counts
 
 identity : re-check every OpenAlex match with pipe.identity_check; failures are unlinked (papers and
@@ -115,6 +115,51 @@ def names():
             st.recount(iid)
     st.invalidate_search()
     log(f"names: renamed {renamed}, re-keyed {rekeyed}, merged {merged}, removed {removed}, reopened {reopened}")
+
+
+def directory_profiles():
+    """Repair rows whose faculty_url is actually a shared directory/listing page.
+
+    Older crawls used (profile_url or directory_url), so an unlinked directory layout could make
+    dozens of professors share one fake "faculty page". That is unsafe: Scholar/ORCID/publication
+    links on the listing can belong to somebody else. Move that URL to directory_url, clear
+    page-derived identity signals, and reprocess the professor with Scholar-first discovery.
+    """
+    d = st.db()
+    dir_urls = set()
+    for inst in d.institutions.find({}, {"directories": 1}):
+        for pair in inst.get("directories") or []:
+            if isinstance(pair, list) and len(pair) >= 2 and pair[1]:
+                dir_urls.add(str(pair[1]).rstrip("/"))
+    rows = []
+    for p in d.professors.find({"faculty_url": {"$nin": ["", None]}},
+                               {"faculty_url": 1, "institution_id": 1, "name": 1}):
+        if str(p.get("faculty_url") or "").rstrip("/") in dir_urls:
+            rows.append(p)
+
+    insts = set()
+    for p in rows:
+        insts.add(p.get("institution_id", ""))
+        old = p.get("faculty_url") or ""
+        d.professors.update_one({"_id": p["_id"]}, {
+            "$set": {
+                "directory_url": old, "faculty_url": "", "profile_extracted": False,
+                "pipeline_done": False, "identity_retry_after": 0,
+            },
+            "$unset": {
+                "profile_full_scan_at": "", "scholar_checked": "", "scholar_url": "",
+                "scholar_id": "", "scholar_affiliation": "", "anchors": "",
+            }
+        })
+    for iid in insts:
+        if iid:
+            d.institutions.update_one({"_id": iid}, {"$set": {
+                "pipeline_state": "PROCESSING",
+                "pipeline_note": "Shared directory URLs separated from personal faculty profiles; affected identities are being rechecked."
+            }})
+            st.recount(iid)
+    st.invalidate_search()
+    log(f"directory_profiles: repaired {len(rows)} professor rows across {len([x for x in insts if x])} universities")
 
 
 def retry_identity():
@@ -461,7 +506,8 @@ def counts():
     log("counts: every university recomputed from its professor rows")
 
 
-STEPS = {"names": names, "retry_identity": retry_identity, "profile_rescan": profile_rescan,
+STEPS = {"names": names, "directory_profiles": directory_profiles,
+         "retry_identity": retry_identity, "profile_rescan": profile_rescan,
          "author_duplicates": author_duplicates, "states": states, "nonpersons": nonpersons,
          "depts": depts, "benjaafar": benjaafar, "hiring": hiring, "grants": grants,
          "identity": identity, "papers": papers, "paper_orphans": paper_orphans,
