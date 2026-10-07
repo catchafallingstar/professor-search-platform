@@ -184,8 +184,8 @@ def:pub PipelineAdmin() -> JsxElement {
                 </div>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
-                {upgrade and upgrade.done and <p className="text-sm text-muted-foreground">{upgrade.message}</p>}
-                {not upgrade or not upgrade.done and <p className="text-sm text-muted-foreground">{"Pause auto-processing first. Run this once, then restart auto-processing and re-queue the old Staff Review jobs."}</p>}
+                {upgrade and <p className="text-sm text-muted-foreground">{upgrade.message}</p>}
+                {not upgrade or (not upgrade.done and upgrade.status != "RUNNING") and <p className="text-sm text-muted-foreground">{"Pause auto-processing first. Run this once, then restart auto-processing and re-queue the old Staff Review jobs."}</p>}
                 <div className="flex flex-wrap items-center gap-2">
                     <Button
                         variant={upgrade and upgrade.done ? "outline" : "default"}
