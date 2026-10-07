@@ -582,7 +582,7 @@ def upgrade_safe():
     rows; the normal background pipeline then reprocesses them with the new rules.
     """
     for fn in (names, directory_profiles, retry_identity, orcid_conflicts, profile_rescan,
-               author_duplicates, states, nonpersons, depts, paper_orphans):
+               author_duplicates, states, nonpersons, depts, benjaafar, paper_orphans):
         fn()
     counts()
     log("upgrade_safe: local data repairs complete; background processing can resume")
