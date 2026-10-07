@@ -280,6 +280,71 @@ def get_professor(pid):
     return _clean(db().professors.find_one({"_id": pid}))
 
 
+def collapse_author_duplicates(inst_id, author_id):
+    """Merge same-person duplicate cards after a confirmed OpenAlex match.
+
+    Only rows at the same university whose names are mutually compatible are merged. If names
+    conflict, identity_check/cleanup reopens them instead; this function never guesses.
+    Returns the surviving professor id, or "" when no safe merge was possible.
+    """
+    if not author_id:
+        return ""
+    d = db()
+    rows = list(d.professors.find({"institution_id": inst_id, "openalex_author_id": author_id}))
+    if len(rows) < 2:
+        return str(rows[0]["_id"]) if rows else ""
+    if not all(nu.names_match_strict(a.get("name", ""), b.get("name", ""))
+               for i, a in enumerate(rows) for b in rows[i + 1:]):
+        return ""
+
+    def score(r):
+        return (len(nu.name_tokens(r.get("name", ""))), len(r.get("name", "")),
+                int(bool(r.get("faculty_url"))), len(r.get("paper_ids") or []))
+
+    winner = max(rows, key=score)
+    losers = [r for r in rows if r["_id"] != winner["_id"]]
+    merged = dict(winner)
+
+    depts = []
+    urls = []
+    papers = []
+    grants = []
+    grant_seen = set()
+    for r in rows:
+        for dep in (r.get("department") or "").split(";"):
+            dep = dep.strip()
+            if dep and dep not in depts:
+                depts.append(dep)
+        for u in [r.get("faculty_url")] + list(r.get("alternate_faculty_urls") or []):
+            if u and u not in urls:
+                urls.append(u)
+        for pid in r.get("paper_ids") or []:
+            if pid not in papers:
+                papers.append(pid)
+        for g in r.get("grants") or []:
+            gid = g.get("id")
+            if gid and gid not in grant_seen:
+                grant_seen.add(gid)
+                grants.append(g)
+
+    if depts:
+        merged["department"] = "; ".join(depts)
+    if urls:
+        merged["faculty_url"] = merged.get("faculty_url") or urls[0]
+        merged["alternate_faculty_urls"] = [u for u in urls if u != merged["faculty_url"]]
+    merged["paper_ids"] = papers
+    merged["grants"] = grants
+    merged["grant_count"] = len(grants)
+    merged["search_text"] = search_text_for(merged)
+    merged["updated_at"] = now_iso()
+    d.professors.replace_one({"_id": winner["_id"]}, merged)
+    loser_ids = [r["_id"] for r in losers]
+    d.professors.delete_many({"_id": {"$in": loser_ids}})
+    d.staff_review.delete_many({"professor_id": {"$in": loser_ids}})
+    invalidate_search()
+    return str(winner["_id"])
+
+
 def next_pending_professor(inst_id):
     """Next runnable professor; transient identity failures are delayed instead of hot-looping."""
     now = time.time()
