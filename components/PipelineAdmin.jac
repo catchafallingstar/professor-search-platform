@@ -193,7 +193,7 @@ def:pub PipelineAdmin() -> JsxElement {
                         disabled={upgrading or running or bool(upgrade and upgrade.done)}
                     >
                         {upgrading and <Spinner />}
-                        {("Database upgrade completed" if upgrade and upgrade.done else ("Running database upgrade..." if upgrading else "Run database upgrade"))}
+                        {("Database upgrade completed" if upgrade and upgrade.done else ("Running database upgrade..." if upgrading or (upgrade and upgrade.status == "RUNNING") else "Run database upgrade"))}
                     </Button>
                     {running and not (upgrade and upgrade.done) and <span className="text-xs text-destructive">{"Pause auto-processing before running the upgrade."}</span>}
                 </div>
