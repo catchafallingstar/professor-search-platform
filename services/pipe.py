@@ -1601,8 +1601,10 @@ def enrich_profile(p, inst):
         out["department"] = dept_hint
 
     if signals.get("scholar_ids"):
-        out["scholar_id"] = signals["scholar_ids"][0]
-        out["scholar_url"] = (signals.get("scholar_urls") or [""])[0]
+        # A link on the page is only a candidate until scholar.py verifies the profile's name
+        # and university. Never persist it as the professor's verified Scholar identity yet.
+        out["scholar_link_candidates"] = list(signals["scholar_ids"])
+        out["scholar_link_urls"] = list(signals.get("scholar_urls") or [])
     if signals.get("orcid") and not p.get("orcid"):
         out["orcid"] = signals["orcid"]
 
