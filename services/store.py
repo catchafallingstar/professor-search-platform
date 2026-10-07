@@ -258,7 +258,13 @@ def get_professor(pid):
 
 
 def next_pending_professor(inst_id):
-    return _clean(db().professors.find_one({"institution_id": inst_id, "pipeline_done": False}, sort=[("_id", 1)]))
+    """Next runnable professor; transient identity failures are delayed instead of hot-looping."""
+    now = time.time()
+    q = {"institution_id": inst_id, "pipeline_done": False,
+         "$or": [{"identity_retry_after": {"$exists": False}},
+                 {"identity_retry_after": {"$lte": now}},
+                 {"identity_retry_after": 0}]}
+    return _clean(db().professors.find_one(q, sort=[("_id", 1)]))
 
 
 def count_professors(query=None):
