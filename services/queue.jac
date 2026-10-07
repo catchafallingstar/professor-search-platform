@@ -59,6 +59,8 @@ obj WorkerState {
 
 obj DatabaseUpgradeState {
     has done: bool = False,
+        status: str = "PENDING",
+        started_at: str = "",
         ran_at: str = "",
         message: str = "";
 }
@@ -266,48 +268,48 @@ def:priv run_maintenance_now() -> StepResult {
     return StepResult(message=f"Maintenance started: re-checking {n} universities.");
 }
 
-glob DB_UPGRADE_KEY: str = "upgrade_safe_20261007_done",
-     DB_UPGRADE_AT_KEY: str = "upgrade_safe_20261007_ran_at";
-
 def:priv get_database_upgrade_state() -> DatabaseUpgradeState {
     require_staff();
-    done = bool(st.get_setting(DB_UPGRADE_KEY, False));
-    ran_at = str(st.get_setting(DB_UPGRADE_AT_KEY, "") or "");
-    return DatabaseUpgradeState(
-        done=done,
-        ran_at=ran_at,
-        message=("Database upgrade completed" + (" at " + ran_at if ran_at else "") + ".")
-            if done else "Database upgrade has not been run yet."
-    );
+    import services.upgrade_runner as upgr;
+    d = upgr.state() as dict;
+    status = str(d.get("status") or "PENDING");
+    done = bool(d.get("done"));
+    ran_at = str(d.get("ran_at") or "");
+    started_at = str(d.get("started_at") or "");
+    err = str(d.get("error") or "");
+    msg = "";
+    if done {
+        msg = "Database upgrade completed" + (" at " + ran_at if ran_at else "") + ".";
+    } elif status == "RUNNING" {
+        msg = "Database upgrade is running" + (" (started " + started_at + ")" if started_at else "") + ".";
+    } elif status == "FAILED" {
+        msg = "Database upgrade failed" + (": " + err if err else ". You can safely run it again.");
+    } else {
+        msg = "Database upgrade has not been run yet.";
+    }
+    return DatabaseUpgradeState(done=done, status=status, started_at=started_at, ran_at=ran_at, message=msg);
 }
 
 def:priv run_database_upgrade() -> StepResult {
-    """Run the one-time MongoDB repair for the current crawler/identity schema.
-
-    The normal worker must be paused so it cannot modify the same professor rows while the
-    migration canonicalizes names, repairs profile URLs, reopens identities and recomputes counts.
-    """
+    """Start the one-time MongoDB repair in the background."""
     require_staff();
-    if bool(st.get_setting(DB_UPGRADE_KEY, False)) {
-        ran_at = str(st.get_setting(DB_UPGRADE_AT_KEY, "") or "");
-        return StepResult(message="Database upgrade already completed" + (" at " + ran_at if ran_at else "") + ".");
-    }
     if pipe.running() {
         return StepResult(ok=False, message="Pause auto-processing before running the database upgrade.");
     }
-    try {
-        import services.cleanup as cleanup;
-        pipe.log("Database upgrade started by staff.");
-        cleanup.upgrade_safe();
-        ran_at = st.now_iso();
-        st.set_setting(DB_UPGRADE_KEY, True);
-        st.set_setting(DB_UPGRADE_AT_KEY, ran_at);
-        pipe.log("Database upgrade completed.");
-        return StepResult(message="Database upgrade completed. Start auto-processing, then re-queue the old staff-review jobs once.");
-    } except Exception as e {
-        pipe.log("Database upgrade failed: " + str(e)[:180]);
-        return StepResult(ok=False, message="Database upgrade failed: " + str(e)[:240]);
+    import services.upgrade_runner as upgr;
+    before = upgr.state() as dict;
+    if bool(before.get("done")) {
+        return StepResult(message="Database upgrade already completed" + (" at " + str(before.get("ran_at")) if before.get("ran_at") else "") + ".");
     }
+    after = upgr.start() as dict;
+    if str(after.get("status") or "") == "RUNNING" {
+        pipe.log("Database upgrade started by staff in the background.");
+        return StepResult(message="Database upgrade started. Keep this page open; status updates automatically.");
+    }
+    if str(after.get("status") or "") == "FAILED" {
+        return StepResult(ok=False, message="Database upgrade could not start: " + str(after.get("error") or "unknown error"));
+    }
+    return StepResult(message="Database upgrade status: " + str(after.get("status") or "PENDING"));
 }
 
 def:priv list_openalex_keys() -> list[KeyStatus] {
