@@ -103,6 +103,8 @@ def find_directories(inst):
         return [], "NONE"
     dom = discovery.domain_of(inst.get("official_website") or "")
     o = ai.guess_directories(inst["name"], dom, FIELDS_HINT)
+    if o.status == "RETRY_LATER":
+        return [], "RETRY_LATER"
     if o.status == "STAFF_REVIEW":
         flag_staff_review("FACULTY_DIRECTORY_DISCOVERY", "FACULTY_DIRECTORY_DISCOVERY_FAILED", inst,
                           source_url=inst.get("official_website", ""), outcome=o, extra={"official_domain": dom})
@@ -134,6 +136,8 @@ def extract_faculty(url, dept, inst):
     if not page.get("ok"):
         return [], via, None
     o = ai.extract_faculty(page["text"], dept)
+    if o.status == "RETRY_LATER":
+        return [], "ai_retry_later", o
     if o.status == "STAFF_REVIEW":
         return [], "ai_failed", o
     out = [{"name": r.name.strip(), "title": r.title or "Professor", "department": dept, "profile_url": url}
@@ -207,6 +211,7 @@ def crawl(inst):
         log(f"{inst['name']}: academic map skipped ({str(e)[:120]})")
     added = 0
     report = []
+    transient_retry = False
     for dept, url in dirs:
         rows, via, failed = extract_faculty(url, dept, inst)
         if not rows and not failed:
@@ -214,7 +219,12 @@ def crawl(inst):
             time.sleep(20)
             rows, via, failed = extract_faculty(url, dept, inst)
         if failed:
-            flag_staff_review("FACULTY_EXTRACTION", "ALL_LLM_FALLBACKS_FAILED", inst, source_url=url, outcome=failed)
+            if getattr(failed, "status", "") == "RETRY_LATER":
+                transient_retry = True
+                log(f"{inst['name']} / {dept}: faculty AI temporarily unavailable; directory will be retried.")
+            else:
+                flag_staff_review("FACULTY_EXTRACTION", "ALL_LLM_FALLBACKS_FAILED", inst, source_url=url, outcome=failed,
+                                  extra={"department": dept})
         rows = rows + more_from_profiles(url, dept, rows)
         n = 0
         for r in rows[:MAX_PER_DEPARTMENT]:
@@ -238,8 +248,10 @@ def crawl(inst):
     except Exception as e:
         log(f"{inst['name']}: coverage audit skipped ({str(e)[:120]})")
     st.invalidate_search()
-    if not dirs and disc_status == "STAFF_REVIEW":
-        return added, report, "STAFF_REVIEW"
+    if not dirs and disc_status in ("STAFF_REVIEW", "RETRY_LATER"):
+        return added, report, disc_status
+    if transient_retry and not added:
+        return added, report, "RETRY_LATER"
     return added, report, disc_status
 
 
@@ -1182,6 +1194,62 @@ def retry_review_item(item_id):
             st.update_professor(p["id"], {"hiring": h, "has_hiring": h["status"] in HIRING_POSITIVE,
                                           "hiring_status": h["status"], "last_hiring_update": h["checked_at"]})
             res = "FIXED"
+    elif t == "FACULTY_DIRECTORY_DISCOVERY":
+        # Re-run the complete university crawl. The current crawler tries deterministic discovery,
+        # academic-unit mapping and recursive sitemaps before AI, so most old LLM failures resolve
+        # without another model call.
+        d.staff_review.delete_one({"_id": item_id})
+        added, report, disc = crawl(inst)
+        fresh = st.get_institution(inst["id"]) or inst
+        if fresh.get("directories"):
+            d.staff_review.delete_one({"_id": item_id})
+            total = st.count_professors({"institution_id": inst["id"]})
+            st.update_institution(inst["id"], {"pipeline_state": "PROCESSING" if total else "CRAWLING",
+                                               "pipeline_note": ""})
+            res = "FIXED_DIRECTORY"
+        elif disc == "RETRY_LATER":
+            d.staff_review.replace_one({"_id": item_id}, dict(item, attempted_at=st.now_iso(),
+                                       last_error="Directory discovery is waiting for an AI model to become available.",
+                                       queue_status="WAITING"), upsert=True)
+            res = "RETRY_LATER"
+        else:
+            # crawl()/find_directories() re-flags genuine model failures. If it did not, keep one
+            # clear manual-review item rather than silently calling this "no faculty".
+            if not d.staff_review.find_one({"_id": item_id}):
+                d.staff_review.replace_one({"_id": item_id}, dict(item, attempted_at=st.now_iso(),
+                                           last_error="No verified faculty directory found after deterministic, sitemap, unit-map and AI discovery.",
+                                           queue_status="RETRIED"), upsert=True)
+            res = "STILL_FAILING"
+    elif t == "FACULTY_EXTRACTION":
+        url = item.get("source_url") or ""
+        dept = item.get("department") or "Faculty"
+        rows, via, failed = extract_faculty(url, dept, inst)
+        if failed and getattr(failed, "status", "") == "RETRY_LATER":
+            res = _keep(item, item.get("steps_done") or [],
+                        "Faculty extraction is waiting for an AI model to become available.")
+        else:
+            rows = rows + more_from_profiles(url, dept, rows)
+            if rows:
+                n = 0
+                for r in rows[:MAX_PER_DEPARTMENT]:
+                    if _NOT_CORE_TITLE.search(r.get("title") or ""):
+                        continue
+                    if st.add_professor(inst, r["name"], r["title"], r["department"] or dept, r["profile_url"] or url):
+                        n += 1
+                d.staff_review.delete_one({"_id": item_id})
+                st.recount(inst["id"])
+                st.update_institution(inst["id"], {"pipeline_state": "PROCESSING", "pipeline_note": ""})
+                res = "FIXED_FACULTY_LIST"
+            elif failed:
+                flag_staff_review("FACULTY_EXTRACTION", "ALL_LLM_FALLBACKS_FAILED", inst,
+                                  source_url=url, outcome=failed, extra={"department": dept})
+                res = "STILL_FAILING"
+            else:
+                d.staff_review.update_one({"_id": item_id}, {"$set": {
+                    "attempted_at": st.now_iso(), "reason": "FACULTY_PAGE_UNREADABLE",
+                    "last_error": "The directory loaded, but no professor-rank faculty could be extracted. "
+                                  "The page may be JS-only, blocked, or no longer a faculty list."}})
+                res = "STILL_FAILING"
     elif t == "OPENALEX_IDENTITY" and p:
         res = _identity_next_steps(item, p, inst)
     elif t == "GRANT_SEARCH" and p:
@@ -1832,6 +1900,10 @@ def step():
                 return f"{inst['name']}: crawl failed ({str(e)[:150]})"
             total = st.count_professors({"institution_id": inst["id"]})
             if total == 0:
+                if disc == "RETRY_LATER" or any(r.get("via") == "ai_retry_later" for r in report):
+                    st.update_institution(inst["id"], {"pipeline_state": "CRAWLING",
+                                                       "pipeline_note": "AI fallback temporarily unavailable; crawl will retry automatically."})
+                    return f"{inst['name']}: faculty crawl postponed; AI fallback temporarily unavailable."
                 if disc == "STAFF_REVIEW" or any(r.get("via") == "ai_failed" for r in report):
                     # the system could not finish (every model failed): not the same as "no faculty"
                     st.update_institution(inst["id"], {"pipeline_state": "STAFF_REVIEW",
