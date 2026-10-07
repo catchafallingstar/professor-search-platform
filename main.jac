@@ -4,7 +4,8 @@ import from services.queue {
     internal_action, download_snapshot, upload_snapshot, snapshot_info,
     set_worker, reset_institution, get_config_status, add_openalex_key, retry_unreadable, recount_all,
     list_openalex_keys, remove_openalex_key, reset_openalex_key, KeyStatus, check_llm, run_maintenance_now,
-    InstitutionStatus, StepResult, WorkerState, ConfigStatus
+    get_database_upgrade_state, run_database_upgrade,
+    InstitutionStatus, StepResult, WorkerState, ConfigStatus, DatabaseUpgradeState
 }
 import from services.directory {
     search_professors, search_professors_page, get_filter_options, get_professor_profile,
