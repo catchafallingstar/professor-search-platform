@@ -1912,12 +1912,19 @@ def step():
             return msg
         insts = queue()
         limited = bool(fx.rate_limit_status()["limited"])
+        waiting_for_identity_retry = False
         if not limited:
             for inst in insts:
                 if inst.get("pipeline_state") != "PROCESSING":
                     continue
                 p = st.next_pending_professor(inst["id"])
                 if p is None:
+                    # A RETRY_LATER professor is still pending, just not runnable until its short
+                    # retry window expires. Never mark the university DONE because of that.
+                    pending = st.count_professors({"institution_id": inst["id"], "pipeline_done": False})
+                    if pending:
+                        waiting_for_identity_retry = True
+                        continue
                     st.recount(inst["id"])
                     fresh = st.get_institution(inst["id"]) or inst
                     cov = fresh.get("coverage") or {}
@@ -1968,6 +1975,8 @@ def step():
             return f"{inst['name']}: imported {added} professors from {len(report)} directory pages."
         if limited:
             raise fx.RateLimited(fx.rate_limit_status()["message"])
+        if waiting_for_identity_retry:
+            return "Identity source temporarily unavailable; waiting for scheduled professor retry."
         msg = scholar_backfill_one()
         if msg:
             return msg
