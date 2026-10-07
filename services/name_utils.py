@@ -17,7 +17,7 @@ CREDENTIAL_KEYS = {
     "pe", "cpa", "rn", "aia", "faia", "fasce", "fieee", "ncarb", "lpc", "ncc", "cccslp",
     "pt", "dpt", "dpm", "pharmd", "aud", "thd", "mpharm", "crnp", "cne", "faanp", "faan",
     "pmhnpbc", "dcsw", "lcsw", "cdp", "dma", "ofs", "sj", "std", "ssl", "rtr", "mha",
-    "msph", "mphil", "mfa", "bfa", "dnp", "aprn", "np", "pmp", "cissp", "frcp", "facs",
+    "msph", "mphil", "mfa", "bfa", "dnp", "aprn", "np", "pmp", "mpp", "cph", "ocn", "cissp", "frcp", "facs",
     "fache", "rd", "ld", "otd", "otr", "rph", "bsee", "msee", "meng", "beng", "msn", "bsn",
 }
 GENERATION_KEYS = {"jr", "sr", "ii", "iii", "iv", "v"}
