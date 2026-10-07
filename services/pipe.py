@@ -17,6 +17,7 @@ import threading
 from services import store as st
 from services import fetchers as fx
 from services import universities as unis
+from services import name_utils as nu
 
 WORK = threading.Lock()
 MAX_PER_DEPARTMENT = 200          # safety cap against runaway pages
@@ -258,50 +259,12 @@ def crawl(inst):
 # ---------------- OpenAlex ----------------
 
 def names_match(prof_name, candidate):
-    a = st.normalize_name(prof_name).split()
-    b = st.normalize_name(candidate).split()
-    if not a or not b:
-        return False
-    if a[-1] == b[-1]:
-        if a[0][0] == b[0][0]:
-            return True
-        for g in b[:-1]:
-            if len(a[0]) >= 3 and len(g) >= 3 and (g.startswith(a[0]) or a[0].startswith(g)):
-                return True
-        return False
-    return a[0] == b[-1] and a[-1] == b[0]
+    """Canonical, high-precision comparison; credentials are ignored, initials may expand."""
+    return nu.names_match(prof_name, candidate)
 
 
 def names_match_strict(prof_name, candidate):
-    """High-precision name comparison for weak identity fallbacks.
-
-    Unlike names_match(), this never treats two different given names that merely share an
-    initial as the same person (e.g. Licheng Liu vs Lihong Liu). Middle initials may be absent
-    on one side, and two-token reversed forms are allowed.
-    """
-    a = st.normalize_name(prof_name).split()
-    b = st.normalize_name(candidate).split()
-    if len(a) < 2 or len(b) < 2:
-        return False
-    if a == b:
-        return True
-    if len(a) == 2 and len(b) == 2 and a[0] == b[1] and a[1] == b[0]:
-        return True
-    if a[0] != b[0] or a[-1] != b[-1]:
-        return False
-    amid, bmid = a[1:-1], b[1:-1]
-    if not amid or not bmid:
-        return True
-    # When both sides carry middle names/initials, each shared position must be compatible.
-    for x, y in zip(amid, bmid):
-        if x == y:
-            continue
-        if len(x) == 1 and y.startswith(x):
-            continue
-        if len(y) == 1 and x.startswith(y):
-            continue
-        return False
-    return True
+    return nu.names_match_strict(prof_name, candidate)
 
 
 def _sid(x):
@@ -787,21 +750,21 @@ IDENTITY_REASONS = dict(SCHOLAR_REASONS, **{
 })
 
 
-IDENTITY_STEPS = ("openalex_ai", "scholar", "orcid", "pages")
+IDENTITY_STEPS = ("scholar", "pages", "orcid", "openalex_ai")
 
 
 def identity_ladder(p, inst, inst_oid, done=None):
-    """One identity ladder, used by the pipeline AND by Re-queue (OpenAlex name + institution has
-    already failed when this runs). Steps, in order; finished steps are passed in `done` and skipped:
-      openalex_ai - local AI picks among real OpenAlex candidates (name, department, university);
-                    Python then checks the pick's institutions include this university
-      scholar     - Google Scholar profile, verified by name + this university (affiliation or
-                    verified email); its papers -> OpenAlex author, else the Scholar papers themselves
-      orcid       - ORCID record with name + this university -> its DOIs -> OpenAlex author
-      pages       - faculty page / personal / lab page (and a web search for the professor's own
-                    site): publications listed there
-    Returns (fields, done, status). status: MATCHED / SCHOLAR / FACULTY_PAGE / NO_RESULT_FOUND /
-    RETRY_LATER (a step could not run now - cooldown or model offline - nothing decided)."""
+    """Fallback identity ladder after direct official-page evidence / OpenAlex did not settle it.
+
+    Priority is deliberate:
+      scholar  - verified Google Scholar profile, especially one linked by the official faculty page
+      pages    - publications on the official faculty page or its explicit Publications/personal links
+      orcid    - ORCID record tied to this university -> DOI evidence -> OpenAlex
+      openalex_ai - final semantic tie-break among real OpenAlex candidates
+
+    Returns (fields, done, status). RETRY_LATER means nothing has been decided and the professor
+    must remain pending rather than being marked pipeline_done.
+    """
     from services import scholar, orcid
     done = list(done or [])
     notes = []
@@ -809,15 +772,6 @@ def identity_ladder(p, inst, inst_oid, done=None):
     def finish(fields, status):
         return dict(fields, identity_checked=st.now_iso(), identity_steps=done), done, status
 
-    if "openalex_ai" not in done:
-        fields, reason = _llm_publications(p, inst)
-        if reason == "LLM_FAILED":
-            return {}, done, "RETRY_LATER"
-        done.append("openalex_ai")
-        if fields.get("match_status") == "MATCHED":
-            return finish(fields, "MATCHED")
-        if fields.get("match_note"):
-            notes.append(fields["match_note"])
     if "scholar" not in done:
         try:
             got, why = scholar.match_via_scholar(p, inst, inst_oid, names_match)
@@ -827,13 +781,30 @@ def identity_ladder(p, inst, inst_oid, done=None):
             print(f"[pipeline] scholar step failed for {p['name']}: {e}")
             got, why = {}, ""
         if not got and not why:
-            return {}, done, "RETRY_LATER"           # search cooling down: resume at this step
+            return {}, done, "RETRY_LATER"
         done.append("scholar")
         if got.get("match_status") == "MATCHED":
-            return finish(got, "MATCHED")
+            return finish(gated(p, got), "MATCHED")
         if got.get("match_status") == "SCHOLAR":
             return finish(_save_scholar_works(p, got), "SCHOLAR")
         notes.append("No verified Google Scholar profile.")
+
+    if "pages" not in done:
+        fp = use_faculty_page(p, inst)
+        if not fp:
+            found = _identity_from_search(p, inst)
+            if found is None:
+                return {}, done, "RETRY_LATER"
+            if found:
+                _save_page_works(p, inst, found["url"], found["pubs"], found["grants"],
+                                 "the professor's own website found by web search")
+                fp = {"match_status": "FACULTY_PAGE", "match_method": "FACULTY_PAGE",
+                      "match_note": f"Publications taken from the professor's own website ({found['url']})."}
+        done.append("pages")
+        if fp:
+            return finish(fp, "FACULTY_PAGE")
+        notes.append("No publications found on the official faculty page or its publication/personal links.")
+
     if "orcid" not in done:
         try:
             got, why = orcid.match_via_orcid(p, inst, names_match, lambda a, b: scholar._names_ok(names_match, a, b))
@@ -846,24 +817,27 @@ def identity_ladder(p, inst, inst_oid, done=None):
             return {}, done, "RETRY_LATER"
         done.append("orcid")
         if got.get("match_status") == "MATCHED":
-            return finish(got, "MATCHED")
+            return finish(gated(p, got), "MATCHED")
         notes.append("No ORCID record confirmed in OpenAlex." if why else "")
-    if "pages" not in done:
-        fp = use_faculty_page(p, inst)
-        if not fp:
-            found = _identity_from_search(p, inst)
-            if found is None:
-                return {}, done, "RETRY_LATER"
-            if found:
-                _save_page_works(p, inst, found["url"], found["pubs"], found["grants"], "the professor's own website found by web search")
-                fp = {"match_status": "FACULTY_PAGE", "match_method": "FACULTY_PAGE",
-                      "match_note": f"Publications taken from the professor's own website ({found['url']})."}
-        done.append("pages")
-        if fp:
-            return finish(fp, "FACULTY_PAGE")
+
+    if "openalex_ai" not in done:
+        fields, reason = _llm_publications(p, inst)
+        if reason == "LLM_FAILED":
+            return {}, done, "RETRY_LATER"
+        done.append("openalex_ai")
+        if fields.get("match_status") == "MATCHED":
+            checked = gated(p, fields)
+            if checked.get("match_status") == "MATCHED":
+                return finish(checked, "MATCHED")
+            if checked.get("match_note"):
+                notes.append(checked["match_note"])
+        elif fields.get("match_note"):
+            notes.append(fields["match_note"])
+
     return finish({"match_status": "NO_RESULT_FOUND",
-                   "match_note": "Checked: OpenAlex candidates with the AI, Google Scholar, ORCID, the faculty page and "
-                                 "pages it links to, and a web search. " + " ".join(n for n in notes if n)}, "NO_RESULT_FOUND")
+                   "match_note": "Checked: Google Scholar, the complete official faculty page and its linked "
+                                 "publication/personal pages, ORCID, and verified OpenAlex candidates. "
+                                 + " ".join(n for n in notes if n)}, "NO_RESULT_FOUND")
 
 
 def _save_scholar_works(p, got):
@@ -886,7 +860,7 @@ def resolve_unmatched(p, inst, inst_oid):
     papers still gets faculty-page grants and hiring signals. Unresolved -> Staff review."""
     fields, done, status = identity_ladder(p, inst, inst_oid)
     if status == "RETRY_LATER":
-        return {}                                    # resumes from the same step on the next pass
+        return None                                  # keep pipeline_done=False; retry after a short delay
     if status in ("MATCHED", "SCHOLAR", "FACULTY_PAGE"):
         st.db().staff_review.delete_many({"task_type": "OPENALEX_IDENTITY", "professor_id": p["id"]})
         return fields
@@ -1590,36 +1564,79 @@ def flag_staff_review(task_type, reason, inst=None, prof=None, source_url="", ou
 
 
 def enrich_profile(p, inst):
-    """Faculty profile page -> lab URL, homepage, ORCID and up to 3 listed papers (anchors that
-    confirm the OpenAlex identity). Without a model this step is skipped."""
-    ai = _ai()
-    if not ai or p.get("profile_extracted") or not p.get("faculty_url"):
+    """Read the complete official faculty profile before doing identity matching.
+
+    Deterministic evidence (Google Scholar, ORCID, publications and explicit publication links)
+    is extracted from the whole fetched page and works even when no LLM is available.  The LLM is
+    only an optional second pass for lab/homepage details and publication formatting.
+    """
+    if not p.get("faculty_url"):
         return {}
-    page = fx.fetch_page(p["faculty_url"])
+    # Rows processed before the full-page scanner existed have profile_extracted=True but no
+    # profile_full_scan_at. Rescan those once so old data gets the new Scholar/publication logic.
+    if p.get("profile_full_scan_at"):
+        return {}
+
+    from services import facultypage as fpg
+    page = fx.fetch_page_cached(p["faculty_url"])
     if not page.get("ok"):
-        return {}                     # page unreachable now; try again on the next run
-    o = ai.extract_profile(page["text"], p["name"])
-    if o.status == "RETRY_LATER":
-        return {}                     # code reload hiccup, not a model failure; retried on the next run
-    if o.status == "STAFF_REVIEW":
-        flag_staff_review("PROFILE_EXTRACTION", "ALL_LLM_FALLBACKS_FAILED", inst, p, p["faculty_url"], o)
         return {}
-    out = {"profile_extracted": True, "profile_ai": _ai_meta(o)}
+
+    text = page.get("text") or ""
+    signals = fpg.identity_signals(text, page.get("url") or p["faculty_url"], p.get("name", ""))
+    out = {"profile_extracted": True, "profile_full_scan_at": st.now_iso()}
+
+    if signals.get("scholar_ids"):
+        out["scholar_id"] = signals["scholar_ids"][0]
+        out["scholar_url"] = (signals.get("scholar_urls") or [""])[0]
+    if signals.get("orcid") and not p.get("orcid"):
+        out["orcid"] = signals["orcid"]
+
+    pubs = list(signals.get("anchors") or [])
+    # Some faculty pages only link to "Publications". Follow those explicit links before using
+    # a weaker name-only OpenAlex match.
+    if not pubs:
+        for url in (signals.get("publication_pages") or [])[:3]:
+            sub = fx.fetch_page_cached(url)
+            if not sub.get("ok"):
+                continue
+            pubs = fpg.publications(sub.get("text") or "", limit=8)
+            if pubs:
+                out["publication_page_url"] = sub.get("url") or url
+                break
+    if pubs:
+        out["anchors"] = [{"title": x.get("title", ""), "doi": "", "publication_year": int(x.get("year") or 0)}
+                          for x in pubs[:8] if x.get("title")]
+
+    ai = _ai()
+    if not ai:
+        return out
+    o = ai.extract_profile(fpg.identity_excerpt(text), p["name"])
+    if o.status == "RETRY_LATER":
+        return out
+    if o.status == "STAFF_REVIEW":
+        # If the official page already gave us strong identity evidence, the optional AI pass is
+        # not a reason to block this professor or send a human a noisy review item.
+        if not (out.get("scholar_id") or out.get("orcid") or out.get("anchors")):
+            flag_staff_review("PROFILE_EXTRACTION", "ALL_LLM_FALLBACKS_FAILED", inst, p, p["faculty_url"], o)
+        return out
+
+    out["profile_ai"] = _ai_meta(o)
     info = o.value
     if info is None:
         return out
-    low = page["text"]
-    if info.lab_url and not p.get("lab_url") and info.lab_url.split("//")[-1][:40] in low:
+    if info.lab_url and not p.get("lab_url") and info.lab_url.split("//")[-1][:40] in text:
         out["lab_url"] = info.lab_url
-    if info.personal_url and not p.get("personal_url") and info.personal_url.split("//")[-1][:40] in low:
+    if info.personal_url and not p.get("personal_url") and info.personal_url.split("//")[-1][:40] in text:
         out["personal_url"] = info.personal_url
-    if info.orcid and not p.get("orcid") and fx.short_id(info.orcid) in low:
+    if info.orcid and not (p.get("orcid") or out.get("orcid")) and fx.short_id(info.orcid) in text:
         out["orcid"] = fx.short_id(info.orcid)
-    anchors = [{"title": pub.title, "doi": pub.doi, "publication_year": pub.year}
-               for pub in (info.publications or [])[:3]
-               if pub.title and fx.normalize_quote_text(pub.title)[:60] in fx.normalize_quote_text(low)]
-    if anchors and not p.get("anchors"):
-        out["anchors"] = anchors
+    if not out.get("anchors"):
+        anchors = [{"title": pub.title, "doi": pub.doi, "publication_year": pub.year}
+                   for pub in (info.publications or [])[:8]
+                   if pub.title and fx.normalize_quote_text(pub.title)[:60] in fx.normalize_quote_text(text)]
+        if anchors:
+            out["anchors"] = anchors
     return out
 
 
@@ -1807,51 +1824,78 @@ def process_professor(p, inst):
     inst_oid = resolve_institution(inst)
     fields = enrich_profile(p, inst)
     p = dict(p, **fields)
+
     if not p.get("openalex_author_id"):
-        fields.update(gated(p, match(p, inst_oid)))
+        # Strongest first: a Scholar profile explicitly linked by this person's official page.
+        from services import scholar
+        linked, linked_reason = scholar.match_via_linked_scholar(p, inst, names_match)
+        if linked_reason == "RETRY_LINKED":
+            fields.update(pipeline_done=False, identity_retry_after=time.time() + 90)
+            st.update_professor(p["id"], fields)
+            return f"{p['name']} ({inst['name']}): linked Google Scholar profile temporarily unreadable; retrying later."
+        if linked.get("match_status") == "MATCHED":
+            fields.update(gated(p, linked))
+        elif linked.get("match_status") == "SCHOLAR":
+            fields.update(_save_scholar_works(p, linked))
+
+    # If the official page did not settle identity, publications extracted from that same page
+    # are tried before the weaker name+institution fallback inside match().
+    if not (fields.get("openalex_author_id") or p.get("openalex_author_id")) and fields.get("match_status") != "SCHOLAR":
+        base = dict(p, **fields)
+        fields.update(gated(base, match(base, inst_oid)))
         if fields.get("match_status") == "UNRESOLVED":
-            fields.update(gated(p, resolve_unmatched(dict(p, **fields), inst, inst_oid) or {}))
+            resolved = resolve_unmatched(dict(p, **fields), inst, inst_oid)
+            if resolved is None:
+                fields.update(pipeline_done=False, identity_retry_after=time.time() + 90)
+                fields["search_text"] = st.search_text_for(dict(p, **fields)) + " | " + st.normalize_name(
+                    inst.get("city", "") + " " + inst.get("state", ""))
+                st.update_professor(p["id"], fields)
+                return f"{p['name']} ({inst['name']}): identity source temporarily unavailable; retrying later."
+            fields.update(gated(dict(p, **fields), resolved))
+
     author = fields.get("openalex_author_id") or p.get("openalex_author_id")
-    n_papers = len(p.get("paper_ids") or [])
+    n_papers = len(fields.get("paper_ids") or p.get("paper_ids") or [])
     grants = p.get("grants") or []
     if author:
-        q = dict(p, openalex_author_id=author)
+        q = dict(p, **fields, openalex_author_id=author)
         ids, subs, flds, awards = ingest_works(q)
         fields.update(paper_ids=ids, subfields=subs, fields=flds, last_openalex_update=st.now_iso())
         n_papers = len(ids)
-    else:
-        n_papers = len(fields.get("paper_ids") or p.get("paper_ids") or [])
-    # still core faculty here? (adjunct/emeritus on the university's own page, or papers now elsewhere)
+
     try:
         fields.update(affiliation_fields(dict(p, **fields), inst))
     except fx.RateLimited:
         raise
     except Exception as e:
         log(f"Affiliation check skipped for {p['name']}: {str(e)[:120]}")
+
     if GRANTS():
-        # every outcome (OpenAlex, Scholar, faculty page, unresolved): NSF/NIH by name and the
-        # faculty page do not need an OpenAlex author
         try:
             grants, _c = collect_grants(dict(p, **fields), inst)
             fields.update(grants=grants, grant_count=len(grants), last_grant_update=st.now_iso())
         except fx.RateLimited:
             raise
         except Exception as e:
-            # keep the professor's previous grants; staff can re-queue the grant search
             flag_staff_review("GRANT_SEARCH", "GRANT_SEARCH_FAILED", inst, p, source_url=p.get("faculty_url", ""),
-                              extra={"last_error": f"{type(e).__name__}: {str(e)[:200]}", "department": p.get("department", "")})
+                              extra={"last_error": f"{type(e).__name__}: {str(e)[:200]}",
+                                     "department": p.get("department", "")})
+
     h = check_hiring(dict(p, **fields), inst)
     if h is not None:
         if h["status"] == "STAFF_REVIEW":
-            fields.update(last_hiring_update=h["checked_at"])     # keep the previous verified result
+            fields.update(last_hiring_update=h["checked_at"])
         else:
             fields.update(hiring=h, has_hiring=h["status"] in HIRING_POSITIVE, hiring_status=h["status"],
                           last_hiring_update=h["checked_at"])
+
     fields["pipeline_done"] = True
+    fields["identity_retry_after"] = 0
     merged = dict(p, **fields)
-    fields["search_text"] = st.search_text_for(merged) + " | " + st.normalize_name(inst.get("city", "") + " " + inst.get("state", ""))
+    fields["search_text"] = st.search_text_for(merged) + " | " + st.normalize_name(
+        inst.get("city", "") + " " + inst.get("state", ""))
     st.update_professor(p["id"], fields)
-    return f"{p['name']} ({inst['name']}): {merged.get('match_status')}, {n_papers} papers" + (f", {len(grants)} grants" if GRANTS() else "")
+    return f"{p['name']} ({inst['name']}): {merged.get('match_status')}, {n_papers} papers" + (
+        f", {len(grants)} grants" if GRANTS() else "")
 
 
 # ---------------- scheduler ----------------
