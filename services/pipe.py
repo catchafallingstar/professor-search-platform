@@ -395,12 +395,14 @@ _DEPT_FIELDS = [
      {"Mathematics", "Computer Science", "Decision Sciences", "Physics and Astronomy", "Engineering",
       "Economics, Econometrics and Finance", "Biochemistry, Genetics and Molecular Biology",
       "Medicine", "Environmental Science", "Earth and Planetary Sciences", "Neuroscience"}),
-    (("computer", "informatics", "information"),
-     {"Computer Science", "Engineering", "Mathematics", "Decision Sciences", "Social Sciences",
-      "Medicine", "Neuroscience", "Psychology"}),
+    # Check discipline-specific engineering BEFORE generic "computer": otherwise
+    # "Electrical and Computer Engineering" is misclassified as Computer Science.
     (("electrical", "ece", "mechanical", "aerospace", "civil", "industrial", "materials", "nuclear"),
      {"Engineering", "Physics and Astronomy", "Materials Science", "Computer Science", "Mathematics",
       "Energy", "Chemistry", "Environmental Science", "Chemical Engineering"}),
+    (("computer", "informatics", "information"),
+     {"Computer Science", "Engineering", "Mathematics", "Decision Sciences", "Social Sciences",
+      "Medicine", "Neuroscience", "Psychology"}),
 ]
 
 
