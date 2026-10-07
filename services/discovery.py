@@ -52,11 +52,19 @@ NEWS_RE = re.compile(
     r"|/(19|20)\d\d[/-]\d{1,2}([/-]\d{1,2})?(/|-|$)"       # /2024/05/... or /2026-04-08-...
     r"|[?&](p|cat|tag)=", re.I)
 DIR_WORDS = ("faculty", "people", "directory", "staff", "researchers", "members", "professors")
+# Pages that may mention many professors but are not rosters. These caused real false imports
+# (e.g. a university's "academic seminars" page with speaker names).
+NON_DIRECTORY_RE = re.compile(
+    r"/(?:academic-)?seminars?(?:/|$)|/(?:faculty-)?committees?(?:/|$)|/governance(?:/|$)|"
+    r"/speakers?(?:/|$)|/colloquia?(?:/|$)|/symposia?(?:/|$)", re.I
+)
 
 
 def is_news_like(url):
     p = urllib.parse.urlparse(url or "")
     path = p.path
+    if NON_DIRECTORY_RE.search(path):
+        return True
     if NEWS_RE.search(path + ("?" + p.query if p.query else "")):
         return True
     # A directory page's own slug names the page ("faculty", "our-faculty"); an article's slug
@@ -289,9 +297,13 @@ def looks_paginated(page_text):
 
 
 def validate(url, dept=""):
-    """Fetch and check a candidate. Returns (ok, rows, info)."""
+    """Fetch and check a candidate. Returns (ok, rows, info).
+
+    A page containing several professor names is not automatically a directory: seminar,
+    committee and governance pages are explicitly rejected before extraction.
+    """
     if is_news_like(url):
-        return False, [], {"name_count": 0, "faculty_title_count": 0, "via": "rejected_news"}
+        return False, [], {"name_count": 0, "faculty_title_count": 0, "via": "rejected_non_directory"}
     rows, via = fx.extract_faculty_any(url, dept or "Faculty")
     titles = sum(1 for r in rows if "professor" in (r.get("title") or "").lower())
     ok = len(rows) >= 5 and titles >= 3
