@@ -566,6 +566,7 @@ _TITLE_RE = re.compile(r"\b((?:Distinguished |Endowed |University |Collegiate |F
 _EXCLUDE_TITLE = re.compile(r"emerit|adjunct|affiliate|courtesy|visiting|lecturer|teaching|clinical|practice|research professor|professor of practice", re.I)
 _LINK_RE = re.compile(r"\[([^\]]{3,160})\]\((https?://[^)\s]+)\)")
 _BAD_NAME = re.compile(r"faculty|directory|people|department|school|college|university|research|news|events|about|contact|staff|students|home|program|center|lab\b|search|filter|view|profile|more|apply|give|login|professor|engineering|science|medicine|robotics|mathematics|physics|chemistry|biology|institute|interests|office|phone|email|website|mentoring|plan\b|policy|guidelines|resources|handbook", re.I)
+_PROFILE_BLOCKED_HOSTS = ("x.com", "twitter.com", "linkedin.com", "facebook.com", "instagram.com", "youtube.com")
 
 
 def _clean_name(s):
@@ -665,6 +666,9 @@ def extract_faculty_rules(page, department):
         out.append({"name": name, "title": (rank.group(1) if rank else title)[:80], "department": department, "profile_url": ""})
     for m in _LINK_RE.finditer(text):
         label, url = m.group(1).strip(), m.group(2)
+        host = urllib.parse.urlparse(url).netloc.lower()
+        if any(h == host or host.endswith("." + h) for h in _PROFILE_BLOCKED_HOSTS):
+            continue
         title = ""
         name = label
         inner = _TITLE_RE.search(label)
