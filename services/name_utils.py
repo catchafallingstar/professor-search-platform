@@ -66,6 +66,10 @@ def clean_person_name(name):
     s = " ".join((name or "").split()).strip(" ,;:-|")
     if not s:
         return ""
+
+    # Social-icon scrapes occasionally turn a person's link label into the name itself,
+    # e.g. "Dr. Carolyn Duncan's X". Strip only an unmistakable trailing platform label.
+    s = re.sub(r"(?:['’]s)?\s+(?:X|Twitter|LinkedIn|Facebook|Instagram)\s*$", "", s, flags=re.I).strip(" ,;:-|")
     # Directory cards sometimes expose social-icon link text as "Dr. Jane Smith's X".
     # The platform label is not part of the person's name.
     s = re.sub(r"(?i)['’]s\s+(?:x|twitter|linkedin|facebook|instagram)$", "", s).strip()
