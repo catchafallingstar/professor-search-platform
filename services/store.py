@@ -23,6 +23,8 @@ import threading
 import time
 import unicodedata
 
+from services import name_utils as nu
+
 _LOCK = threading.Lock()
 _DB = {"db": None, "uri": "", "checked": 0.0}
 _ENV_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
@@ -162,7 +164,7 @@ PROF_DEFAULTS = {
 
 
 def prof_id(inst_id, name):
-    return f"{inst_id}:{normalize_name(name)}"
+    return f"{inst_id}:{nu.normalize_person_name(name)}"
 
 
 def search_text_for(p):
@@ -198,18 +200,14 @@ _HEADING_DEPTS = re.compile(
 
 
 def looks_like_person(name):
-    """Directory scrapers sometimes return a role or page heading as a 'name' ("Interim Chair",
-    "In The Media", "Graduate Studies Director") or a doubled name ("Frank Calegari Frank Calegari
-    Chair"). Those must never become professors."""
-    n = repair_name(name)
-    words = n.split()
-    if len(words) < 2 or len(words) > 6 or any(c.isdigit() for c in n):
+    """Reject page headings/roles and canonicalize credential-decorated names."""
+    n = repair_name(nu.clean_person_name(name))
+    if not nu.looks_like_person(n):
         return False
     if n.lower().startswith(("from ", "by ", "the ", "in ")):
         return False
     if _ROLE_WORDS.search(n):
         return False
-    # "Sheldon B. Lubar Dean", "Associate Dean ...": a role word only with another role marker
     low = n.lower()
     if re.search(r"\b(dean|chancellor|president|head)\b", low) and re.search(r"\b(associate|assistant|vice|executive|senior|academic)\b", low):
         return False
@@ -228,13 +226,15 @@ def add_professor(inst, name, title, department, faculty_url):
     from pymongo.errors import DuplicateKeyError
     if not looks_like_person(name):
         return False
-    name = repair_name(name)
+    name = repair_name(nu.clean_person_name(name))
+    if not name:
+        return False
     department = clean_department(department)
     pid = prof_id(inst["id"], name)
     doc = dict(PROF_DEFAULTS)
     ts = now_iso()
     doc.update(
-        _id=pid, name=name.strip(), normalized_name=normalize_name(name), title=title or "Professor",
+        _id=pid, name=name.strip(), normalized_name=nu.normalize_person_name(name), title=title or "Professor",
         department=department, institution_id=inst["id"], university=inst["name"],
         faculty_url=faculty_url, created_at=ts, updated_at=ts,
     )
