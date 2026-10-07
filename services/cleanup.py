@@ -118,49 +118,60 @@ def names():
 
 
 def directory_profiles():
-    """Repair rows whose faculty_url is actually a shared directory/listing page.
+    """Repair faculty_url values that are not individual professor profiles.
 
-    Older crawls used (profile_url or directory_url), so an unlinked directory layout could make
-    dozens of professors share one fake "faculty page". That is unsafe: Scholar/ORCID/publication
-    links on the listing can belong to somebody else. Move that URL to directory_url, clear
-    page-derived identity signals, and reprocess the professor with Scholar-first discovery.
+    Older crawls used (profile_url or directory_url), so unlinked directory layouts could make
+    dozens of professors share one fake faculty page. Social-icon links could also be mistaken
+    for a profile. Both are unsafe identity evidence and are cleared before reprocessing.
     """
+    import urllib.parse
     d = st.db()
     dir_urls = set()
     for inst in d.institutions.find({}, {"directories": 1}):
         for pair in inst.get("directories") or []:
             if isinstance(pair, list) and len(pair) >= 2 and pair[1]:
                 dir_urls.add(str(pair[1]).rstrip("/"))
+    bad_hosts = {"x.com", "twitter.com", "linkedin.com", "facebook.com", "instagram.com", "youtube.com"}
     rows = []
     for p in d.professors.find({"faculty_url": {"$nin": ["", None]}},
                                {"faculty_url": 1, "institution_id": 1, "name": 1}):
-        if str(p.get("faculty_url") or "").rstrip("/") in dir_urls:
-            rows.append(p)
+        url = str(p.get("faculty_url") or "")
+        host = urllib.parse.urlparse(url).netloc.lower()
+        is_directory = url.rstrip("/") in dir_urls
+        is_social = any(host == h or host.endswith("." + h) for h in bad_hosts)
+        if is_directory or is_social:
+            rows.append((p, is_directory, is_social))
 
     insts = set()
-    for p in rows:
+    n_dir = n_social = 0
+    for p, is_directory, is_social in rows:
         insts.add(p.get("institution_id", ""))
         old = p.get("faculty_url") or ""
+        set_fields = {"faculty_url": "", "profile_extracted": False,
+                      "pipeline_done": False, "identity_retry_after": 0}
+        if is_directory:
+            set_fields["directory_url"] = old
+            n_dir += 1
+        if is_social:
+            set_fields["rejected_profile_url"] = old
+            n_social += 1
         d.professors.update_one({"_id": p["_id"]}, {
-            "$set": {
-                "directory_url": old, "faculty_url": "", "profile_extracted": False,
-                "pipeline_done": False, "identity_retry_after": 0,
-            },
+            "$set": set_fields,
             "$unset": {
                 "profile_full_scan_at": "", "scholar_checked": "", "scholar_url": "",
-                "scholar_id": "", "scholar_affiliation": "", "anchors": "",
+                "scholar_id": "", "scholar_affiliation": "", "scholar_link_candidates": "",
+                "scholar_link_urls": "", "anchors": "",
             }
         })
     for iid in insts:
         if iid:
             d.institutions.update_one({"_id": iid}, {"$set": {
                 "pipeline_state": "PROCESSING",
-                "pipeline_note": "Shared directory URLs separated from personal faculty profiles; affected identities are being rechecked."
+                "pipeline_note": "Invalid/shared faculty profile URLs repaired; affected identities are being rechecked."
             }})
             st.recount(iid)
     st.invalidate_search()
-    log(f"directory_profiles: repaired {len(rows)} professor rows across {len([x for x in insts if x])} universities")
-
+    log(f"directory_profiles: repaired {n_dir} shared directory URLs and {n_social} social URLs across {len([x for x in insts if x])} universities")
 
 def retry_identity():
     """Repair rows that were incorrectly finalized after an old transient identity failure.
