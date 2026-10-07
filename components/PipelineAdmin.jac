@@ -12,7 +12,8 @@ import from .ui.empty { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescrip
 sv import from ..services.queue {
     load_priority_universities, get_pipeline_status, run_step_as_staff, get_worker_state,
     set_worker, reset_institution, get_config_status, add_openalex_key, check_llm, run_maintenance_now,
-    InstitutionStatus, StepResult, WorkerState, ConfigStatus
+    get_database_upgrade_state, run_database_upgrade,
+    InstitutionStatus, StepResult, WorkerState, ConfigStatus, DatabaseUpgradeState
 }
 import from .OpenAlexKeys { OpenAlexKeys }
 import from .StaffNav { StaffNav }
@@ -47,9 +48,12 @@ def:pub PipelineAdmin() -> JsxElement {
     has rows: list[InstitutionStatus] = [],
         worker: WorkerState | None = None,
         config: ConfigStatus | None = None,
+        upgrade: DatabaseUpgradeState | None = None,
         loading: bool = True,
         busy: bool = False,
+        upgrading: bool = False,
         llm_msg: str = "",
+        upgrade_msg: str = "",
         error: str = "";
 
     async def refresh() -> None {
@@ -99,12 +103,27 @@ def:pub PipelineAdmin() -> JsxElement {
         busy = False;
     }
 
+    async def run_upgrade() -> None {
+        upgrading = True;
+        upgrade_msg = "";
+        try {
+            r: StepResult = await run_database_upgrade();
+            upgrade_msg = r.message;
+            upgrade = await get_database_upgrade_state();
+            await refresh();
+        } except Exception as e {
+            upgrade_msg = "Database upgrade failed: " + str(e);
+        }
+        upgrading = False;
+    }
+
     async def reset(iid: str) -> None {
         try { await reset_institution(iid); await refresh(); } except Exception as e { error = str(e); }
     }
 
     async can with entry {
         try { config = await get_config_status(); } except Exception { config = None; }
+        try { upgrade = await get_database_upgrade_state(); } except Exception { upgrade = None; }
         await refresh();
     }
 
@@ -151,6 +170,34 @@ def:pub PipelineAdmin() -> JsxElement {
             <HugeiconsIcon icon={Alert01Icon} strokeWidth={2} className="mt-0.5 size-4 shrink-0 text-destructive" />
             <span>{config.rate_limit_message + " Faculty imports from university sites continue meanwhile; matching resumes automatically."}</span>
         </div>}
+
+        <Card className="shadow-sm">
+            <CardHeader>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex flex-col gap-1">
+                        <CardTitle>{"One-time database upgrade"}</CardTitle>
+                        <CardDescription>{"Repairs legacy MongoDB records created by older crawler logic: credential-decorated names, shared directory URLs, stale identity evidence, duplicate authors and bad department labels."}</CardDescription>
+                    </div>
+                    {upgrade and upgrade.done and <Badge variant="secondary">{"Completed"}</Badge>}
+                </div>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+                {upgrade and upgrade.done and <p className="text-sm text-muted-foreground">{upgrade.message}</p>}
+                {not upgrade or not upgrade.done and <p className="text-sm text-muted-foreground">{"Pause auto-processing first. Run this once, then restart auto-processing and re-queue the old Staff Review jobs."}</p>}
+                <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                        variant={upgrade and upgrade.done ? "outline" : "default"}
+                        onClick={run_upgrade}
+                        disabled={upgrading or running or bool(upgrade and upgrade.done)}
+                    >
+                        {upgrading and <Spinner />}
+                        {("Database upgrade completed" if upgrade and upgrade.done else ("Running database upgrade..." if upgrading else "Run database upgrade"))}
+                    </Button>
+                    {running and not (upgrade and upgrade.done) and <span className="text-xs text-destructive">{"Pause auto-processing before running the upgrade."}</span>}
+                </div>
+                {upgrade_msg and <p className="text-sm text-muted-foreground">{upgrade_msg}</p>}
+            </CardContent>
+        </Card>
 
         <div className="grid gap-6 lg:grid-cols-3">
             <Card className="shadow-sm lg:col-span-1">
