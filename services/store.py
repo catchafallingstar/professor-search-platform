@@ -198,8 +198,8 @@ _HEADING_DEPTS = re.compile(
     r"faculty and staff(?: directory)?|faculty & staff(?: directory)?|meet (?:our|the) faculty|"
     r"our (?:faculty|team|people)|all faculty|find faculty|faculty by department|faculty at .+|"
     r"additional faculty|people(?: directory)?|find faculty|who we are|about(?: us)?|all|group|apply|www|research(?: highlights)?|faculty research|"
-    r"faculty (?:and|&) research|deans? awards?|faculty bookshelf|directory|home|news|in the media|"
-    r"academic seminars)$", re.I)
+    r"faculty (?:and|&) research|deans? awards?|faculty bookshelf|people directory|directory|home|news|in the media|"
+    r"academic seminars|www|all|group|apply|about)$", re.I)
 
 
 def looks_like_person(name):
