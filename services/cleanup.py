@@ -305,7 +305,12 @@ def orcid_conflicts():
             continue
         compatible = all(nu.names_match_strict(a.get("name", ""), b.get("name", ""))
                          for i, a in enumerate(rows) for b in rows[i + 1:])
-        if compatible:
+        # Two cards that already point to the SAME non-empty OpenAlex author provide independent
+        # corroboration that a short/full-name variant is one person (e.g. Ram/Ramanarayan
+        # Vasudevan). Do not tear that identity down just because the names are not strict aliases.
+        author_ids = {r.get("openalex_author_id") for r in rows if r.get("openalex_author_id")}
+        author_corroborated = len(author_ids) == 1 and all(r.get("openalex_author_id") for r in rows)
+        if compatible or author_corroborated:
             continue
         for r in rows:
             update = {
