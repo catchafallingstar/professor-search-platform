@@ -300,8 +300,13 @@ def collapse_author_duplicates(inst_id, author_id):
     rows = list(d.professors.find({"institution_id": inst_id, "openalex_author_id": author_id}))
     if len(rows) < 2:
         return str(rows[0]["_id"]) if rows else ""
-    if not all(nu.names_match_strict(a.get("name", ""), b.get("name", ""))
-               for i, a in enumerate(rows) for b in rows[i + 1:]):
+    strict_names = all(nu.names_match_strict(a.get("name", ""), b.get("name", ""))
+                       for i, a in enumerate(rows) for b in rows[i + 1:])
+    # For non-obvious aliases, require an independent identity source too: all duplicate cards
+    # must carry the same non-empty ORCID in addition to the same OpenAlex author.
+    orcids = {r.get("orcid") for r in rows if r.get("orcid")}
+    orcid_corroborated = len(orcids) == 1 and all(r.get("orcid") for r in rows)
+    if not (strict_names or orcid_corroborated):
         return ""
 
     def score(r):
