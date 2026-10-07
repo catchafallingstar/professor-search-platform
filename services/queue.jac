@@ -57,6 +57,12 @@ obj WorkerState {
         log: list[str] = [];
 }
 
+obj DatabaseUpgradeState {
+    has done: bool = False,
+        ran_at: str = "",
+        message: str = "";
+}
+
 obj KeyStatus {
     has id: str = "",
         source: str = "",
@@ -258,6 +264,50 @@ def:priv run_maintenance_now() -> StepResult {
     n = int(pipe.start_maintenance());
     pipe.log(f"Maintenance started by staff: re-checking {n} universities.");
     return StepResult(message=f"Maintenance started: re-checking {n} universities.");
+}
+
+glob DB_UPGRADE_KEY: str = "upgrade_safe_20261007_done",
+     DB_UPGRADE_AT_KEY: str = "upgrade_safe_20261007_ran_at";
+
+def:priv get_database_upgrade_state() -> DatabaseUpgradeState {
+    require_staff();
+    done = bool(st.get_setting(DB_UPGRADE_KEY, False));
+    ran_at = str(st.get_setting(DB_UPGRADE_AT_KEY, "") or "");
+    return DatabaseUpgradeState(
+        done=done,
+        ran_at=ran_at,
+        message=("Database upgrade completed" + (" at " + ran_at if ran_at else "") + ".")
+            if done else "Database upgrade has not been run yet."
+    );
+}
+
+def:priv run_database_upgrade() -> StepResult {
+    """Run the one-time MongoDB repair for the current crawler/identity schema.
+
+    The normal worker must be paused so it cannot modify the same professor rows while the
+    migration canonicalizes names, repairs profile URLs, reopens identities and recomputes counts.
+    """
+    require_staff();
+    if bool(st.get_setting(DB_UPGRADE_KEY, False)) {
+        ran_at = str(st.get_setting(DB_UPGRADE_AT_KEY, "") or "");
+        return StepResult(message="Database upgrade already completed" + (" at " + ran_at if ran_at else "") + ".");
+    }
+    if pipe.running() {
+        return StepResult(ok=False, message="Pause auto-processing before running the database upgrade.");
+    }
+    try {
+        import services.cleanup as cleanup;
+        pipe.log("Database upgrade started by staff.");
+        cleanup.upgrade_safe();
+        ran_at = st.now_iso();
+        st.set_setting(DB_UPGRADE_KEY, True);
+        st.set_setting(DB_UPGRADE_AT_KEY, ran_at);
+        pipe.log("Database upgrade completed.");
+        return StepResult(message="Database upgrade completed. Start auto-processing, then re-queue the old staff-review jobs once.");
+    } except Exception as e {
+        pipe.log("Database upgrade failed: " + str(e)[:180]);
+        return StepResult(ok=False, message="Database upgrade failed: " + str(e)[:240]);
+    }
 }
 
 def:priv list_openalex_keys() -> list[KeyStatus] {
