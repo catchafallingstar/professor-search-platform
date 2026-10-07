@@ -152,12 +152,13 @@ def more_from_profiles(url, dept, rows, max_pages=200):
     have = {st.normalize_name(r["name"]) for r in rows}
     have_urls = {r.get("profile_url") for r in rows}
     extra = []
-    profiles = discovery.sitemap_profiles(url)
-    log(f"{url}: listing is paginated; reading {min(len(profiles), max_pages)} profile pages from the sitemap")
-    for purl in profiles[:max_pages]:
-        if purl in have_urls:
-            continue
-        pg = fx.fetch_page(purl)
+    profiles = [u for u in discovery.sitemap_profiles(url) if u not in have_urls][:max_pages]
+    log(f"{url}: listing is paginated; reading {len(profiles)} profile pages from the sitemap")
+    # 8 profile pages at a time (each is one independent read; the reader is the slow part)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        pages = list(pool.map(fx.fetch_page_cached, profiles))
+    for purl, pg in zip(profiles, pages):
         if not pg.get("ok"):
             continue
         name = re.split(r"\s+[|\-–]\s+", (pg.get("title") or "").strip())[0].strip()
@@ -168,7 +169,6 @@ def more_from_profiles(url, dept, rows, max_pages=200):
             continue                            # staff without a professor title are skipped
         have.add(st.normalize_name(name))
         extra.append({"name": name, "title": title, "department": dept, "profile_url": purl})
-        time.sleep(0.5)
     return extra
 
 
@@ -182,6 +182,18 @@ def crawl(inst):
         dirs = [[d["department"], d["url"]] for d in found]
         if found:
             st.update_institution(inst["id"], {"directories": dirs, "directory_meta": [dict(d, checked_at=st.now_iso()) for d in found]})
+    # Academic map: colleges -> departments -> a faculty source per unit, each with its own budget,
+    # so finding one directory no longer ends discovery for the whole university.
+    try:
+        from services import units as un
+        unit_list, dirs, cov = un.build(dict(inst, units=inst.get("units") or []), dirs, log)
+        st.update_institution(inst["id"], {"units": unit_list, "directories": dirs, "coverage": cov})
+        if dirs and disc_status not in ("CURATED", "FOUND"):
+            disc_status = "FOUND"
+    except fx.RateLimited:
+        raise
+    except Exception as e:
+        log(f"{inst['name']}: academic map skipped ({str(e)[:120]})")
     added = 0
     report = []
     for dept, url in dirs:
@@ -204,6 +216,13 @@ def crawl(inst):
         time.sleep(1.5)   # be gentle with the reader service / university sites
     st.update_institution(inst["id"], {"dirs_checked": report})
     st.recount(inst["id"])
+    try:
+        from services import units as un
+        fresh = st.get_institution(inst["id"]) or {}
+        cov = fresh.get("coverage") or {}
+        st.update_institution(inst["id"], {"coverage_state": un.coverage_state(cov, st.count_professors({"institution_id": inst["id"]}))})
+    except Exception as e:
+        log(f"{inst['name']}: coverage audit skipped ({str(e)[:120]})")
     st.invalidate_search()
     if not dirs and disc_status == "STAFF_REVIEW":
         return added, report, "STAFF_REVIEW"

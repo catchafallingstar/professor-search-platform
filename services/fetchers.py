@@ -480,6 +480,27 @@ def _via_reader(url, patient=False):
     return title, body
 
 
+_PAGE_CACHE = {}
+_PAGE_CACHE_LOCK = threading.Lock()
+
+
+def fetch_page_cached(url, ttl=3600):
+    """fetch_page with an in-memory cache (1 h): profile pages read during discovery are not
+    downloaded again for the affiliation / hiring steps that follow."""
+    now = time.time()
+    with _PAGE_CACHE_LOCK:
+        hit = _PAGE_CACHE.get(url)
+        if hit and now - hit[0] < ttl:
+            return hit[1]
+    page = fetch_page(url)
+    if page.get("ok"):
+        with _PAGE_CACHE_LOCK:
+            if len(_PAGE_CACHE) > 3000:
+                _PAGE_CACHE.clear()
+            _PAGE_CACHE[url] = (now, page)
+    return page
+
+
 def fetch_page(url):
     """Returns {"url", "title", "text", "ok", "via"}; never raises.
     Direct request first; if the site blocks bots, retry through the reader service."""
