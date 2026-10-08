@@ -47,7 +47,7 @@ obj ViewHistoryItem {
 
 glob MAX_ITEMS: int = 200;
 
-def:priv record_search(
+def:protect record_search(
     query: str = "",
     university: str = "",
     department: str = "",
@@ -83,7 +83,7 @@ def:priv record_search(
     return True;
 }
 
-def:priv record_view(professor_id: str, professor_name: str, university: str = "", department: str = "") -> bool {
+def:protect record_view(professor_id: str, professor_name: str, university: str = "", department: str = "") -> bool {
     for v in [root -->][?:ViewEntry] {
         if v.professor_id == professor_id {
             v.viewed_at = now_iso();
@@ -98,7 +98,7 @@ def:priv record_view(professor_id: str, professor_name: str, university: str = "
     return True;
 }
 
-def:priv get_search_history() -> list[SearchHistoryItem] {
+def:protect get_search_history() -> list[SearchHistoryItem] {
     items = [
         SearchHistoryItem(
             id=jid(s), query=s.query, university=s.university, department=s.department,
@@ -111,7 +111,7 @@ def:priv get_search_history() -> list[SearchHistoryItem] {
     return items;
 }
 
-def:priv get_view_history() -> list[ViewHistoryItem] {
+def:protect get_view_history() -> list[ViewHistoryItem] {
     items = [
         ViewHistoryItem(
             id=jid(v), professor_id=v.professor_id, professor_name=v.professor_name,
@@ -123,14 +123,14 @@ def:priv get_view_history() -> list[ViewHistoryItem] {
     return items;
 }
 
-def:priv clear_search_history() -> int {
+def:protect clear_search_history() -> int {
     entries = [root -->][?:SearchEntry];
     n = len(entries);
     for s in entries { del s; }
     return n;
 }
 
-def:priv clear_view_history() -> int {
+def:protect clear_view_history() -> int {
     entries = [root -->][?:ViewEntry];
     n = len(entries);
     for v in entries { del v; }

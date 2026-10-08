@@ -153,7 +153,7 @@ def find_professor(pid: str) -> Professor | None {
     return None;
 }
 
-def now_iso() -> str {
+def:protect now_iso() -> str {
     import from datetime { datetime, timezone }
     return datetime.now(timezone.utc).isoformat();
 }

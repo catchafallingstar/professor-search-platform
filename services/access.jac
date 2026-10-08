@@ -61,36 +61,36 @@ def _is_guest() -> bool {
     return jid(root) == jid(root.shared);
 }
 
-def caller_email() -> str {
+def:protect caller_email() -> str {
     # Verified login identity of whoever is making this request ("" for guests).
     if _is_guest() { return ""; }
     return str(ident.email_for_root(jid(root)));
 }
 
-def is_owner_caller() -> bool {
+def:protect is_owner_caller() -> bool {
     e = caller_email();
     return bool(e) and e == OWNER_EMAIL;
 }
 
-def is_staff_caller() -> bool {
+def:protect is_staff_caller() -> bool {
     e = caller_email();
     if not e { return False; }
     return e == OWNER_EMAIL or e in _staff();
 }
 
-def require_staff() -> None {
+def:protect require_staff() -> None {
     if not is_staff_caller() {
         raise PermissionError("Staff only");
     }
 }
 
-def require_owner() -> None {
+def:protect require_owner() -> None {
     if not is_owner_caller() {
         raise PermissionError("Only the site owner can manage staff accounts");
     }
 }
 
-def:priv whoami(email: str = "") -> WhoAmI {
+def:protect whoami(email: str = "") -> WhoAmI {
     # f"email" from the client is ignored for access decisions; kept only for API compatibility.
     _ = email;
     e = caller_email();
@@ -102,7 +102,7 @@ def:priv whoami(email: str = "") -> WhoAmI {
     );
 }
 
-def:priv promote_staff(email: str) -> AccessResult {
+def:protect promote_staff(email: str) -> AccessResult {
     require_owner();
     e = email.strip().lower();
     if not e or "@" not in e {
@@ -119,7 +119,7 @@ def:priv promote_staff(email: str) -> AccessResult {
     return AccessResult(message=f"{e} is now staff. It takes effect the next time they sign in or reload.");
 }
 
-def:priv revoke_staff(email: str) -> AccessResult {
+def:protect revoke_staff(email: str) -> AccessResult {
     require_owner();
     e = email.strip().lower();
     cur = _staff();
@@ -130,12 +130,12 @@ def:priv revoke_staff(email: str) -> AccessResult {
     return AccessResult(message=f"{e} no longer has staff access.");
 }
 
-def:priv list_staff() -> list[str] {
+def:protect list_staff() -> list[str] {
     require_staff();
     return [OWNER_EMAIL + " (owner)"] + [e for e in _staff() if e and e != OWNER_EMAIL];
 }
 
-def:priv reset_staff_registry() -> AccessResult {
+def:protect reset_staff_registry() -> AccessResult {
     # Owner-only cleanup: drops every staff grant.
     require_owner();
     _set_staff([]);
@@ -146,7 +146,7 @@ def:priv reset_staff_registry() -> AccessResult {
 
 glob WORKER_TOKEN_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".worker_token");
 
-def worker_token() -> str {
+def:protect worker_token() -> str {
     existing: str = "";
     if os.path.exists(WORKER_TOKEN_FILE) {
         with open(WORKER_TOKEN_FILE) as fh {
@@ -161,6 +161,6 @@ def worker_token() -> str {
     return fresh;
 }
 
-def check_worker_token(token: str) -> bool {
+def:protect check_worker_token(token: str) -> bool {
     return bool(token) and secrets.compare_digest(token.encode(), worker_token().encode());
 }

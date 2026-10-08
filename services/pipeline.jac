@@ -26,7 +26,7 @@ def _run(professor_id: str) -> PipelineResult {
     }
 }
 
-def:priv run_pipeline_for_professor(professor_id: str) -> PipelineResult {
+def:protect run_pipeline_for_professor(professor_id: str) -> PipelineResult {
     require_staff();
     return _run(professor_id);
 }

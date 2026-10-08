@@ -45,7 +45,7 @@ obj DbProfessorPage {
         rows: list[DbProfessor] = [];
 }
 
-def:priv staff_overview() -> DbOverview {
+def:protect staff_overview() -> DbOverview {
     require_staff();
     o = st.overview() as dict;
     return DbOverview(
@@ -55,7 +55,7 @@ def:priv staff_overview() -> DbOverview {
     );
 }
 
-def:priv staff_institutions() -> list[DbInstitution] {
+def:protect staff_institutions() -> list[DbInstitution] {
     require_staff();
     rows = [
         DbInstitution(
@@ -70,7 +70,7 @@ def:priv staff_institutions() -> list[DbInstitution] {
     return rows;
 }
 
-def:priv staff_professors(query: str = "", match_status: str = "", offset: int = 0, limit: int = 50) -> DbProfessorPage {
+def:protect staff_professors(query: str = "", match_status: str = "", offset: int = 0, limit: int = 50) -> DbProfessorPage {
     require_staff();
     res = st.search(query, "", "", "", False, False, 0, 100000) as dict;
     rows: list[DbProfessor] = [];
