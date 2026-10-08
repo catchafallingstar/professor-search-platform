@@ -26,7 +26,7 @@ from services import discovery as dsc
 ROOT_BUDGET = 30          # pages to find the colleges / schools
 UNIT_BUDGET = 8           # pages per college / school to find its departments
 SOURCE_BUDGET = 6         # candidate directory pages validated per unit
-MAX_UNITS = 120
+MAX_UNITS = 220
 MAX_ROUNDS = 4
 
 _UNIT_NAME = re.compile(
@@ -92,19 +92,27 @@ class Map:
         for u in inst.get("units") or []:
             self.units[_key(u["name"])] = dict(u)
 
-    def add(self, name, url, parent="", method="", allow_plain=False):
+    def add(self, name, url, parent="", method="", allow_plain=False, kind=""):
         name = _clean(name)
         if not looks_like_unit(name, allow_plain=allow_plain) or len(self.units) >= MAX_UNITS:
             return False
         if url and not dsc.on_domain(url, self.dom):
             url = ""
+        # Academic hubs often label a school simply "Engineering" or "Business" while another
+        # page calls it "School of Engineering". Treat an identical official URL as the same unit
+        # instead of creating a second branch of the map.
+        if url:
+            norm_url = url.rstrip("/")
+            for existing in self.units.values():
+                if (existing.get("url") or "").rstrip("/") == norm_url:
+                    return False
         k = _key(name)
         if k in self.units:
             u = self.units[k]
             if url and not u.get("url"):
                 u["url"] = url
             return False
-        self.units[k] = {"name": name, "type": unit_type(name), "url": url, "parent": parent,
+        self.units[k] = {"name": name, "type": kind or unit_type(name), "url": url, "parent": parent,
                          "status": "PENDING", "directories": [], "found_via": method, "pages_used": 0}
         return True
 
@@ -142,7 +150,11 @@ def pass_colleges(m, log=print):
             break
         budget -= 1
         for text, url in _links(m.base + path):
-            if dsc.on_domain(url, m.dom) and unit_type(text) in ("college", "school") and m.add(text, url, method="hub_link"):
+            top_kind = unit_type(text)
+            plain_top = bool(_PLAIN_ACADEMIC.match(_clean(text)))
+            if dsc.on_domain(url, m.dom) and (top_kind in ("college", "school") or plain_top) \
+                    and m.add(text, url, method="hub_link", allow_plain=plain_top,
+                              kind="school" if plain_top and top_kind not in ("college", "school") else ""):
                 new += 1
         time.sleep(0.5)
     if sum(1 for u in m.list() if u["type"] in ("college", "school")) < 2:
@@ -152,7 +164,11 @@ def pass_colleges(m, log=print):
                 for r in websearch.search(q, 10):
                     if dsc.on_domain(r["url"], m.dom):
                         for text, url in _links(r["url"])[:300]:
-                            if unit_type(text) in ("college", "school") and m.add(text, url, method="search"):
+                            top_kind = unit_type(text)
+                            plain_top = bool(_PLAIN_ACADEMIC.match(_clean(text)))
+                            if (top_kind in ("college", "school") or plain_top) \
+                                    and m.add(text, url, method="search", allow_plain=plain_top,
+                                              kind="school" if plain_top and top_kind not in ("college", "school") else ""):
                                 new += 1
                         break
             except websearch.SearchUnavailable:
