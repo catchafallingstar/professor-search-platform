@@ -4,7 +4,8 @@ The logic lives in services/pipe.py and writes to MongoDB."""
 import services.store as st;
 import services.pipe as pipe;
 import services.fetchers as fx;
-import from services.access { require_staff, check_worker_token }
+import from services.access { require_staff }
+import services.worker_auth as wa;
 
 obj PipelineResult {
     has ok: bool = True,
@@ -32,6 +33,6 @@ def:protect run_pipeline_for_professor(professor_id: str) -> PipelineResult {
 }
 
 def:pub internal_run_professor(worker_token: str = "", professor_id: str = "") -> PipelineResult {
-    if not check_worker_token(worker_token) { return PipelineResult(ok=False, message="Forbidden"); }
+    if not wa.check_worker_token(worker_token) { return PipelineResult(ok=False, message="Forbidden"); }
     return _run(professor_id);
 }
