@@ -5,7 +5,7 @@
 * USER   - everyone else (search + their own history).
 
 Identity is NEVER taken from the browser. The caller's email is looked up server-side
-from the verified login record that belongs to the caller's own root (services/identity.py),
+from the verified login record that belongs to the caller's root (services/identity.py),
 so nobody can claim to be the owner or a staff member by sending an email string.
 There is no "first account becomes staff" bootstrap any more.
 """
@@ -13,7 +13,7 @@ There is no "first account becomes staff" bootstrap any more.
 import os;
 import secrets;
 import services.store as st;
-import from jaclang.server.identity.user_manager { UserManager }
+import services.identity as ident;
 
 glob OWNER_EMAIL: str = "bxybai@umich.edu";
 
@@ -61,57 +61,10 @@ def _is_guest() -> bool {
     return jid(root) == jid(root.shared);
 }
 
-def _norm_root_id(value: any) -> str {
-    return str(value or "").replace("-", "").lower();
-}
-
 def caller_email() -> str {
-    # Current Jac keeps login identities in its identity store, not the old
-    # .jac/data/users.db SQLite file.
+    # Read only from the authenticated Jac root, never the untrusted browser email.
     if _is_guest() { return ""; }
-
-    wanted: str = _norm_root_id(jid(root));
-    if not wanted { return ""; }
-
-    users = UserManager();
-    offset: int = 0;
-    page_size: int = 200;
-
-    while True {
-        page: list[dict[str, any]] = users.list_all_users(
-            limit=page_size,
-            offset=offset
-        );
-
-        if not page { break; }
-
-        for user in page {
-            if _norm_root_id(user.get("root_id")) != wanted {
-                continue;
-            }
-
-            identities: list[dict[str, any]] = user.get("identities") or [];
-
-            for kind in ["email", "username"] {
-                for identity in identities {
-                    if str(identity.get("type") or "") == kind {
-                        return str(
-                            identity.get("value_normalized")
-                            or identity.get("value_raw")
-                            or ""
-                        ).strip().lower();
-                    }
-                }
-            }
-
-            return "";
-        }
-
-        if len(page) < page_size { break; }
-        offset += len(page);
-    }
-
-    return "";
+    return str(ident.email_for_root(jid(root)));
 }
 
 def:protect is_owner_caller() -> bool {
