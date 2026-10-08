@@ -71,7 +71,11 @@ def:pub AuthPage() -> JsxElement {
             return;
         }
         busy = False;
-        if staff_login and (not who or not who.is_staff) {
+        if who is None {
+            error = "Signed in, but the server could not verify account permissions. Please retry.";
+            return;
+        }
+        if staff_login and not who.is_staff {
             error = "This account does not have staff access. Ask the site owner to grant access.";
             return;
         }
