@@ -29,3 +29,5 @@ jobs:
           python3 -m unittest discover -s tests -p test_worker_auth.py -v
       - name: Compile and type-check all Jac apps
         run: jac check
+      - name: Test Jac owner and staff authorization logic
+        run: jac run tests/test_staff_access.jac
