@@ -25,5 +25,6 @@ jobs:
         run: jac install
       - name: Test account identity lookup (no database credentials)
         run: python3 -m unittest discover -s tests -p test_identity_lookup.py -v
+          python3 -m unittest discover -s tests -p test_worker_auth.py -v
       - name: Compile and type-check all Jac apps
         run: jac check
