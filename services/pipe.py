@@ -250,8 +250,14 @@ def crawl(inst):
         unit_list, cov = un.apply_extraction_results(unit_list, cov, report)
         cov_state = un.coverage_state(cov, st.count_professors({"institution_id": inst["id"]}))
         st.update_institution(inst["id"], {"units": unit_list, "coverage": cov, "coverage_state": cov_state})
+        sync_coverage_review(st.get_institution(inst["id"]) or inst)
     except Exception as e:
         log(f"{inst['name']}: coverage audit skipped ({str(e)[:120]})")
+        flag_staff_review(
+            "UNIVERSITY_COVERAGE", "COVERAGE_AUDIT_FAILED", inst=inst,
+            source_url=inst.get("official_website", ""),
+            extra={"last_error": f"{type(e).__name__}: {str(e)[:240]}"},
+        )
     st.invalidate_search()
     if not dirs and disc_status in ("STAFF_REVIEW", "RETRY_LATER"):
         return added, report, disc_status
@@ -1182,6 +1188,26 @@ def retry_review_item(item_id):
             st.update_professor(p["id"], {"hiring": h, "has_hiring": h["status"] in HIRING_POSITIVE,
                                           "hiring_status": h["status"], "last_hiring_update": h["checked_at"]})
             res = "FIXED"
+    elif t == "UNIVERSITY_COVERAGE":
+        # Re-run the complete crawl/unit map. crawl() itself refreshes the coverage audit and
+        # either clears this review item on COMPLETE coverage or recreates it with current gaps.
+        d.staff_review.delete_one({"_id": item_id})
+        added, report, disc = crawl(inst)
+        fresh = st.get_institution(inst["id"]) or inst
+        cov_state = fresh.get("coverage_state") or ""
+        if cov_state == "COMPLETE":
+            d.staff_review.delete_many({"task_type": "UNIVERSITY_COVERAGE", "institution_id": inst["id"]})
+            pending = st.count_professors({"institution_id": inst["id"], "pipeline_done": False})
+            total = st.count_professors({"institution_id": inst["id"]})
+            next_state = "PROCESSING" if pending else ("DONE" if total else "CRAWLING")
+            st.update_institution(inst["id"], {"pipeline_state": next_state, "pipeline_note": ""})
+            res = "FIXED_COVERAGE"
+        elif disc == "RETRY_LATER":
+            sync_coverage_review(fresh)
+            res = "RETRY_LATER"
+        else:
+            sync_coverage_review(fresh)
+            res = "STILL_FAILING"
     elif t == "FACULTY_DIRECTORY_DISCOVERY":
         # Re-run the complete university crawl. The current crawler tries deterministic discovery,
         # academic-unit mapping and recursive sitemaps before AI, so most old LLM failures resolve
@@ -1578,6 +1604,59 @@ def flag_staff_review(task_type, reason, inst=None, prof=None, source_url="", ou
     doc.update(extra or {})
     st.db().staff_review.replace_one({"_id": key}, doc, upsert=True)
     log(f"Staff review: {task_type} {reason} - {(prof or {}).get('name') or (inst or {}).get('name', '')}")
+
+
+def sync_coverage_review(inst):
+    """Keep one Staff Review item in sync with the university's academic-unit coverage audit.
+
+    Coverage problems do not block already-imported professors from being processed.  They do,
+    however, stay visible to staff until a later crawl proves COMPLETE coverage.
+    """
+    if not inst:
+        return False
+    iid = inst.get("id") or inst.get("_id")
+    if not iid:
+        return False
+    fresh = st.get_institution(iid) or inst
+    state = fresh.get("coverage_state") or ""
+    d = st.db()
+    if state == "COMPLETE":
+        d.staff_review.delete_many({"task_type": "UNIVERSITY_COVERAGE", "institution_id": str(iid)})
+        return False
+    if state not in ("PARTIAL_COVERAGE", "DISCOVERY_FAILED", "UNMAPPED"):
+        return False
+
+    cov = fresh.get("coverage") or {}
+    missing = list(cov.get("missing") or [])
+    empty = list(cov.get("empty_directories") or [])
+    if state == "PARTIAL_COVERAGE":
+        detail = (
+            f"Academic-unit coverage is partial: {cov.get('readable_units', 0)}/{cov.get('units', 0)} "
+            f"teaching units yielded faculty; {len(missing)} units have no verified directory and "
+            f"{len(empty)} directories were empty or unreadable."
+        )
+    elif state == "UNMAPPED":
+        detail = "Professors were imported, but the university's academic-unit map could not be verified."
+    else:
+        detail = "No verifiable academic-unit/faculty coverage was discovered for this university."
+
+    source = fresh.get("official_website") or ""
+    keep_id = f"UNIVERSITY_COVERAGE:{iid}:{source}"
+    d.staff_review.delete_many({
+        "task_type": "UNIVERSITY_COVERAGE",
+        "institution_id": str(iid),
+        "_id": {"$ne": keep_id},
+    })
+    flag_staff_review(
+        "UNIVERSITY_COVERAGE", state, inst=fresh, source_url=source,
+        extra={
+            "coverage_state": state,
+            "missing_units": missing[:60],
+            "empty_directories": empty[:60],
+            "last_error": detail,
+        },
+    )
+    return True
 
 
 def enrich_profile(p, inst):
@@ -2005,13 +2084,19 @@ def step():
                     fresh = st.get_institution(inst["id"]) or inst
                     cov = fresh.get("coverage") or {}
                     cov_state = fresh.get("coverage_state") or ""
+                    needs_coverage_review = sync_coverage_review(fresh)
                     note = ""
                     if cov_state == "PARTIAL_COVERAGE":
                         note = (f"Faculty coverage is partial: {cov.get('readable_units', 0)}/{cov.get('units', 0)} "
                                 f"academic units yielded faculty; {len(cov.get('missing') or [])} missing directories, "
-                                f"{len(cov.get('empty_directories') or [])} unreadable/empty directories.")
+                                f"{len(cov.get('empty_directories') or [])} unreadable/empty directories. "
+                                "Coverage gaps are listed under Staff review.")
+                    elif cov_state == "UNMAPPED":
+                        note = "Professors were processed, but academic-unit coverage is unmapped; listed under Staff review."
+                    elif cov_state == "DISCOVERY_FAILED":
+                        note = "Academic-unit coverage discovery failed; listed under Staff review."
                     st.update_institution(inst["id"], {"pipeline_state": "DONE", "pipeline_note": note})
-                    return f"{inst['name']}: all imported professors processed" + ("; coverage remains partial." if note else ".")
+                    return f"{inst['name']}: all imported professors processed" + ("; coverage needs staff review." if needs_coverage_review else ".")
                 msg = process_professor(p, inst)
                 if st.count_professors({"institution_id": inst["id"], "pipeline_done": False}) % 10 == 0:
                     st.recount(inst["id"])
@@ -2036,8 +2121,16 @@ def step():
                     st.update_institution(inst["id"], {"pipeline_state": "STAFF_REVIEW",
                                                        "pipeline_note": "AI fallbacks failed; listed under Staff review."})
                     return f"{inst['name']}: needs staff review."
+                fresh = st.get_institution(inst["id"]) or inst
+                cov_state = fresh.get("coverage_state") or ""
+                if cov_state in ("PARTIAL_COVERAGE", "DISCOVERY_FAILED", "UNMAPPED"):
+                    sync_coverage_review(fresh)
+                    note = ("No complete faculty coverage could be verified automatically; "
+                            "the university is listed under Staff review.")
+                    st.update_institution(inst["id"], {"pipeline_state": "STAFF_REVIEW", "pipeline_note": note})
+                    return f"{inst['name']}: faculty coverage needs staff review."
                 note = ("No faculty directory could be read." if inst.get("directories") or report
-                        else "No faculty directory found (sitemaps, homepage links" + (", AI guesses" if _ai() else "") + "). Add URLs in services/universities.py.")
+                        else "No faculty directory found (sitemaps, homepage links" + (", AI guesses" if _ai() else "") + ").")
                 st.update_institution(inst["id"], {"pipeline_state": "NO_FACULTY_FOUND", "pipeline_note": note})
                 return f"{inst['name']}: no faculty found."
             fresh = st.get_institution(inst["id"]) or inst
@@ -2046,7 +2139,10 @@ def step():
             note = ""
             if cov_state == "PARTIAL_COVERAGE":
                 note = (f"Partial faculty coverage: {cov.get('readable_units', 0)}/{cov.get('units', 0)} "
-                        f"academic units currently readable.")
+                        f"academic units currently readable; gaps are listed under Staff review.")
+            elif cov_state in ("UNMAPPED", "DISCOVERY_FAILED"):
+                note = "Academic-unit coverage needs staff review."
+            sync_coverage_review(fresh)
             st.update_institution(inst["id"], {"pipeline_state": "PROCESSING", "pipeline_note": note})
             return f"{inst['name']}: imported {added} professors from {len(report)} directory pages."
         if limited:
@@ -2088,7 +2184,7 @@ def start_maintenance():
     st.set_setting("maintenance_started", st.now_iso())
     n = 0
     for inst in queue():
-        if inst.get("pipeline_state") in ("DONE", "PROCESSING", "NO_FACULTY_FOUND"):
+        if inst.get("pipeline_state") in ("DONE", "PROCESSING", "NO_FACULTY_FOUND", "STAFF_REVIEW", "FAILED"):
             st.update_institution(inst["id"], {"pipeline_state": "CRAWLING"})
             n += 1
     st.db().professors.update_many({}, {"$set": {"pipeline_done": False}})
@@ -2121,7 +2217,7 @@ def recrawl_all():
     """Re-read every directory (new departments / fixed parsers); existing professors keep their data."""
     n = 0
     for inst in queue():
-        if inst.get("pipeline_state") in ("PROCESSING", "DONE", "NO_FACULTY_FOUND", "FAILED"):
+        if inst.get("pipeline_state") in ("PROCESSING", "DONE", "NO_FACULTY_FOUND", "FAILED", "STAFF_REVIEW"):
             st.update_institution(inst["id"], {"pipeline_state": "CRAWLING", "pipeline_note": ""})
             n += 1
     return n
