@@ -141,7 +141,10 @@ def:pub PipelineAdmin() -> JsxElement {
         if r.pipeline_state == "DONE" { finished += 1; }
     }
     running = worker.running if worker else False;
+    upgrade_done = bool(upgrade and upgrade.done);
     upgrade_running = bool(upgrade and upgrade.status == "RUNNING");
+    show_upgrade_help = not upgrade_done and not upgrade_running;
+    upgrade_button_text = "Database upgrade completed" if upgrade_done else ("Running database upgrade..." if upgrading or upgrade_running else "Run database upgrade");
     llm_ok = config.llm_key if config else False;
     log: list[str] = worker.log if worker else [];
 
@@ -180,22 +183,22 @@ def:pub PipelineAdmin() -> JsxElement {
                         <CardTitle>{"One-time database upgrade"}</CardTitle>
                         <CardDescription>{"Repairs legacy MongoDB records created by older crawler logic: credential-decorated names, shared directory URLs, stale identity evidence, duplicate authors and bad department labels."}</CardDescription>
                     </div>
-                    {upgrade and upgrade.done and <Badge variant="secondary">{"Completed"}</Badge>}
+                    {upgrade_done and <Badge variant="secondary">{"Completed"}</Badge>}
                 </div>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
                 {upgrade and <p className="text-sm text-muted-foreground">{upgrade.message}</p>}
-                {not upgrade or (not upgrade.done and upgrade.status != "RUNNING") and <p className="text-sm text-muted-foreground">{"Pause auto-processing first. Run this once, then restart auto-processing and re-queue the old Staff Review jobs."}</p>}
+                {show_upgrade_help and <p className="text-sm text-muted-foreground">{"Pause auto-processing first. Run this once, then restart auto-processing and re-queue the old Staff Review jobs."}</p>}
                 <div className="flex flex-wrap items-center gap-2">
                     <Button
-                        variant={upgrade and upgrade.done ? "outline" : "default"}
+                        variant={"outline" if upgrade_done else "default"}
                         onClick={run_upgrade}
-                        disabled={upgrading or running or bool(upgrade and (upgrade.done or upgrade.status == "RUNNING"))}
+                        disabled={upgrading or running or upgrade_running or upgrade_done}
                     >
-                        {upgrading and <Spinner />}
-                        {("Database upgrade completed" if upgrade and upgrade.done else ("Running database upgrade..." if upgrading or (upgrade and upgrade.status == "RUNNING") else "Run database upgrade"))}
+                        {(upgrading or upgrade_running) and <Spinner />}
+                        {upgrade_button_text}
                     </Button>
-                    {running and not (upgrade and upgrade.done) and <span className="text-xs text-destructive">{"Pause auto-processing before running the upgrade."}</span>}
+                    {running and not upgrade_done and <span className="text-xs text-destructive">{"Pause auto-processing before running the upgrade."}</span>}
                 </div>
                 {upgrade_msg and <p className="text-sm text-muted-foreground">{upgrade_msg}</p>}
             </CardContent>
