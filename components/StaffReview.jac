@@ -28,6 +28,7 @@ glob RESULT_LABELS: dict[str, str] = {
          "FIXED_FACULTY_PAGE": "Fixed: publications from faculty page",
          "FIXED_DIRECTORY": "Fixed: faculty directory rediscovered",
          "FIXED_FACULTY_LIST": "Fixed: faculty list extracted",
+         "FIXED_COVERAGE": "Fixed: university faculty coverage complete",
          "NO_RESULT_FOUND": "Retried: still no result",
          "RETRY_LATER": "Waiting: a step will run again shortly",
          "PAGE_UNREACHABLE": "Retried: page still blocked",
@@ -70,6 +71,7 @@ glob TASK_LABELS: dict[str, str] = {
          "HIRING_EXTRACTION": "Hiring check",
          "FACULTY_DIRECTORY_DISCOVERY": "Faculty directory",
          "FACULTY_EXTRACTION": "Faculty list",
+         "UNIVERSITY_COVERAGE": "University faculty coverage",
          "PROFILE_EXTRACTION": "Faculty profile",
          "HIRING": "Hiring check"
      };
