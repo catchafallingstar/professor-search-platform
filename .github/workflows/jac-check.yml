@@ -1,0 +1,27 @@
+name: Jac compile validation
+
+on:
+  push:
+    branches:
+      - chatgpt/staff-signin-fix
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  jac-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install current Jac toolchain
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/jaseci-labs/jaseci/main/scripts/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Check Jac version
+        run: jac --version
+      - name: Install dependencies
+        run: jac install
+      - name: Compile and type-check all Jac apps
+        run: jac check
