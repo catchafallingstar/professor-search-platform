@@ -7,7 +7,7 @@ with entry {
          patch.object(access, "jid", return_value="abcdef"),
          patch.object(access.ident, "email_for_root", return_value="bxybai@umich.edu") as identity_lookup {
         me = access.whoami("attacker@example.com");
-        assert me.is_staff and me.is_owner;
+        assert me.logged_in and me.is_staff and me.is_owner;
         assert me.email == "bxybai@umich.edu";
         identity_lookup.assert_called_with("abcdef");
 
@@ -23,7 +23,8 @@ with entry {
         }
 
         identity_lookup.return_value = "";
-        assert not access.whoami().is_staff;
+        me = access.whoami();
+        assert not me.logged_in and not me.is_staff;
     }
     with patch.object(access, "_is_guest", return_value=True) {
         assert access.caller_email() == "";

@@ -10,10 +10,11 @@ so nobody can claim to be the owner or a staff member by sending an email string
 There is no "first account becomes staff" bootstrap any more.
 """
 
+import os;
 import services.store as st;
 import services.identity as ident;
 
-glob OWNER_EMAIL: str = "bxybai@umich.edu";
+glob OWNER_EMAIL: str = str(os.environ.get("OWNER_EMAIL", "bxybai@umich.edu")).strip().lower();
 
 node StaffRegistry {
     has root_ids: list[str] = [],   # legacy field, no longer trusted for access
@@ -93,7 +94,7 @@ def:protect whoami(email: str = "") -> WhoAmI {
     _ = email;
     e = caller_email();
     return WhoAmI(
-        logged_in=True,
+        logged_in=bool(e),
         email=e,
         is_staff=bool(e) and (e == OWNER_EMAIL or e in _staff()),
         is_owner=bool(e) and e == OWNER_EMAIL

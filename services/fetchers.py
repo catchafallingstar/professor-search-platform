@@ -137,26 +137,25 @@ def stop_worker():
 
 
 def ensure_owner_account():
-    """Recreate the owner login after a sandbox reset wiped the account store.
+    """Provision the owner through Jac's current PostgreSQL-backed UserManager.
 
-    Needs OWNER_PASSWORD (Settings > Environment). Registering an account that already
-    exists simply fails, so this is safe to run on every boot."""
+    OWNER_PASSWORD is only used at account creation and is never logged.
+    If the account already exists, do not reset or replace its credentials.
+    """
     email = os.environ.get("OWNER_EMAIL", "bxybai@umich.edu").strip().lower()
     password = os.environ.get("OWNER_PASSWORD", "")
-    base = _local_api()
-    if not password or not base:
-        if not password:
-            print("[auth] OWNER_PASSWORD not set; the owner account is not auto-created.")
+    if not password:
+        print("[auth] OWNER_PASSWORD not set; owner auto-provisioning disabled.")
         return
-    body = {"identities": [{"type": "email", "value": email}],
-            "credential": {"type": "password", "password": password}}
-    req = urllib.request.Request(base + "/user/register", data=json.dumps(body).encode("utf-8"),
-                                 headers={"Content-Type": "application/json"}, method="POST")
     try:
-        urllib.request.urlopen(req, timeout=30).read()
-        print(f"[auth] owner account {email} created.")
-    except Exception as e:
-        print(f"[auth] owner account already present or not created ({str(e)[:80]}).")
+        from jaclang.server.identity.user_manager import UserManager
+        created = UserManager().create_user(email, password)
+        if created and created.get("user_id"):
+            print(f"[auth] owner account {email} provisioned.")
+        else:
+            print("[auth] owner not provisioned; check existing account or identity backend.")
+    except Exception as exc:
+        print(f"[auth] owner not provisioned: {type(exc).__name__}: {str(exc)[:120]}")
 
 
 def _accounts_backup_loop():
