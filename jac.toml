@@ -2,7 +2,7 @@
 name = "empty"
 version = "0.0.1"
 description = "Empty Jac project - start from scratch"
-entry-point = "main.jac"
+entry-point = "main"
 kind = "web-app"
 
 [byllm]
@@ -29,7 +29,7 @@ radius = "small"
 menuAccent = "subtle"
 menuColor = "default"
 
-[dependencies]
+[dependencies.pypi]
 ddgs = "~=9.16"
 pymongo = "~=4.18"
 
@@ -74,11 +74,9 @@ tailwindcss = "4.3.3"
 
 
 
-[dev-dependencies]
+[dev-dependencies.pypi]
 watchdog = ">=3.0.0"
 
-[serve]
-base_route_app = "app"
 
 [client]
 [client.vite]
@@ -98,8 +96,6 @@ og_site_name = "Blank canvas"
 
 
 [scale]
-[scale.microservices]
-enabled = false
 
 [jacpack]
 name = 'professor-search-platform__1'
