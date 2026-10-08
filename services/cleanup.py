@@ -598,6 +598,33 @@ def affiliation():
     log(f"affiliation: done {counts_}")
 
 
+def coverage_rescan():
+    """Queue every university for one pass through the new academic-unit coverage mapper.
+
+    Older records can contain perfectly usable professor rows but no units/coverage audit because
+    they were crawled before units.py existed.  The migration itself stays network-free: it only
+    clears the old coverage snapshot and changes the university back to CRAWLING.  Once the normal
+    worker resumes, crawl() rebuilds colleges/schools/departments, searches for a faculty source in
+    each discovered teaching unit, and creates Staff Review items for unresolved coverage gaps.
+
+    Existing professors and known directory URLs are preserved.  This means the recrawl can add
+    missing departments without discarding already-verified professor/identity data.
+    """
+    d = st.db()
+    n = 0
+    for inst in d.institutions.find({}, {"_id": 1}):
+        d.institutions.update_one({"_id": inst["_id"]}, {"$set": {
+            "pipeline_state": "CRAWLING",
+            "pipeline_note": "Rebuilding academic-unit faculty coverage after database upgrade.",
+            "units": [],
+            "coverage": {},
+            "coverage_state": "",
+            "dirs_checked": [],
+        }})
+        n += 1
+    log(f"coverage_rescan: queued {n} universities for academic-unit/faculty coverage rebuild")
+
+
 def upgrade_safe():
     """Apply the local/idempotent repairs for the current schema/identity upgrade.
 
@@ -605,7 +632,8 @@ def upgrade_safe():
     rows; the normal background pipeline then reprocesses them with the new rules.
     """
     for fn in (names, directory_profiles, retry_identity, orcid_conflicts, profile_rescan,
-               author_duplicates, states, nonpersons, depts, benjaafar, paper_orphans):
+               author_duplicates, states, nonpersons, depts, benjaafar, paper_orphans,
+               coverage_rescan):
         fn()
     counts()
     log("upgrade_safe: local data repairs complete; background processing can resume")
@@ -621,9 +649,9 @@ def counts():
 STEPS = {"upgrade_safe": upgrade_safe, "names": names, "directory_profiles": directory_profiles,
          "retry_identity": retry_identity, "orcid_conflicts": orcid_conflicts, "profile_rescan": profile_rescan,
          "author_duplicates": author_duplicates, "states": states, "nonpersons": nonpersons,
-         "depts": depts, "benjaafar": benjaafar, "hiring": hiring, "grants": grants,
-         "grant_recheck": grant_recheck, "identity": identity, "papers": papers, "paper_orphans": paper_orphans,
-         "affiliation": affiliation, "counts": counts}
+         "depts": depts, "benjaafar": benjaafar, "coverage_rescan": coverage_rescan,
+         "hiring": hiring, "grants": grants, "grant_recheck": grant_recheck, "identity": identity,
+         "papers": papers, "paper_orphans": paper_orphans, "affiliation": affiliation, "counts": counts}
 
 if __name__ == "__main__":
     for name in (sys.argv[1:] or list(STEPS)):
