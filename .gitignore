@@ -11,3 +11,5 @@ data/.directory.*.tmp
 .env
 dist/
 *.jab
+jac-check*.txt
+services/*.before-*

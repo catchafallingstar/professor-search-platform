@@ -58,7 +58,8 @@ def:pub TopNav() -> JsxElement {
                 {me and me.is_staff and <NavItem to="/staff" label="Staff" />}
                 {me and <button type="button" onClick={lambda { signOut(); nav("/"); }}
                     className="rounded-md pt-1.5 pb-1.5 pl-3 pr-3 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">{"Sign out"}</button>}
-                {auth["ready"] and not me and <Link to="/login" className="ml-1 rounded-md bg-primary pt-1.5 pb-1.5 pl-3 pr-3 font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90">{"Sign in"}</Link>}
+                {not me and <NavItem to="/login?next=/staff" label="Staff sign in" />}
+                {not me and <Link to="/login" className="ml-1 rounded-md bg-primary pt-1.5 pb-1.5 pl-3 pr-3 font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90">{"Sign in"}</Link>}
             </nav>
         </div>
     </header>;

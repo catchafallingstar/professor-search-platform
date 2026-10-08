@@ -1,3 +1,4 @@
+import from "@jac/runtime" { SignupResult }
 import from "@jac/runtime" { Link, useNavigate, useLocation, jacLogin, jacSignup }
 import from "@hugeicons/react" { HugeiconsIcon }
 import from "@hugeicons/core-free-icons" { Search01Icon, SparklesIcon, Clock01Icon, Analytics01Icon }
@@ -28,6 +29,10 @@ def:pub AuthPage() -> JsxElement {
     nav = useNavigate();
     loc = useLocation();
 
+    params: any = new(URLSearchParams, loc.search);  # jac:ignore[E1053]
+    nxt: str = params.get("next") or "";
+    staff_login = nxt == "/staff" or nxt.startswith("/staff/");
+
     async def submit(e: any) -> None {
         e.preventDefault();
         if not email.strip() or not password {
@@ -40,14 +45,14 @@ def:pub AuthPage() -> JsxElement {
         }
         busy = True;
         error = "";
-        signup_result: dict | None = None;
+        signup_result: SignupResult | None = None;
         ok: bool = False;
         who: any = None;
         addr = email.strip().lower();
         try {
             if mode == "signup" {
                 signup_result = await jacSignup(addr, password);
-                if not signup_result["success"] {
+                if not signup_result.success {
                     error = "Could not create the account. The email may already be registered.";
                     busy = False;
                     return;
@@ -66,9 +71,11 @@ def:pub AuthPage() -> JsxElement {
             return;
         }
         busy = False;
-        params: any = new(URLSearchParams, loc.search);  # jac:ignore[E1053]
-        nxt: str = params.get("next") or "";
-        if nxt and nxt.startswith("/") {
+        if staff_login and (not who or not who.is_staff) {
+            error = "This account does not have staff access. Ask the site owner to grant access.";
+            return;
+        }
+        if nxt and nxt.startswith("/") and not nxt.startswith("//") {
             nav(nxt, {"replace": True});
         } elif who and who.is_staff {
             nav("/staff", {"replace": True});
@@ -103,15 +110,15 @@ def:pub AuthPage() -> JsxElement {
             <div className="flex flex-1 items-center justify-center">
                 <form onSubmit={submit} className="flex w-full max-w-sm flex-col gap-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
                     <div className="flex flex-col gap-1.5">
-                        <h2 className="text-2xl font-semibold tracking-tight">{"Create your account" if is_signup else "Welcome back"}</h2>
-                        <p className="text-sm text-muted-foreground">{"Save your searches and the professors you look at." if is_signup else "Sign in to see your search and viewing history."}</p>
+                        <h2 className="text-2xl font-semibold tracking-tight">{"Create your account" if is_signup else ("Staff sign in" if staff_login else "Welcome back")}</h2>
+                        <p className="text-sm text-muted-foreground">{"Save your searches and the professors you look at." if is_signup else ("Sign in with an account granted staff access by the site owner." if staff_login else "Sign in to see your search and viewing history.")}</p>
                     </div>
-                    <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted pt-1 pb-1 pl-1 pr-1">
+                    {not staff_login and <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted pt-1 pb-1 pl-1 pr-1">
                         <button type="button" onClick={lambda { mode = "signin"; error = ""; }}
                             className={"rounded-md pt-1.5 pb-1.5 text-sm font-medium transition-colors " + ("bg-background shadow-sm" if not is_signup else "text-muted-foreground hover:text-foreground")}>{"Sign in"}</button>
                         <button type="button" onClick={lambda { mode = "signup"; error = ""; }}
                             className={"rounded-md pt-1.5 pb-1.5 text-sm font-medium transition-colors " + ("bg-background shadow-sm" if is_signup else "text-muted-foreground hover:text-foreground")}>{"Create account"}</button>
-                    </div>
+                    </div>}
                     <FieldGroup>
                         <Field>
                             <FieldLabel htmlFor="auth-email">{"Email"}</FieldLabel>

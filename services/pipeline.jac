@@ -14,7 +14,7 @@ obj PipelineResult {
 def _run(professor_id: str) -> PipelineResult {
     p = st.get_professor(professor_id);
     if p is None { return PipelineResult(ok=False, message="Professor not found."); }
-    inst = st.get_institution(str((p as dict).get("institution_id", "")));
+    inst = st.get_institution(str((p as dict[str, any]).get("institution_id", "")));
     if inst is None { return PipelineResult(ok=False, message="Professor has no institution."); }
     try {
         st.update_professor(professor_id, {"pipeline_done": False});

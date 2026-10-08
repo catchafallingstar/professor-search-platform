@@ -99,7 +99,7 @@ def _flag(v: any) -> bool {
     return v is True or str(v).lower() == "true";
 }
 
-def _summary(r: dict) -> ProfessorSummary {
+def _summary(r: dict[str, any]) -> ProfessorSummary {
     return ProfessorSummary(
         id=str(r.get("id", "")), name=str(r.get("name", "")), title=str(r.get("title", "")),
         department=str(r.get("department", "")), university=str(r.get("university", "")),
@@ -121,9 +121,9 @@ def:pub search_professors_page(
 ) -> SearchResults {
     # One page of results: the Search page loads 50, then 20 more per "Load more".
     pipe.note_search();   # the background pipeline pauses while people are searching
-    res = st.search(query, university, department, subfield, _flag(has_grant), _flag(has_hiring), offset, limit) as dict;
+    res = st.search(query, university, department, subfield, _flag(has_grant), _flag(has_hiring), offset, limit) as dict[str, any];
     return SearchResults(
-        items=[_summary(r) for r in (res["items"] as list[dict])], total=int(res["total"]), offset=int(res["offset"])
+        items=[_summary(r) for r in (res["items"] as list[dict[str, any]])], total=int(res["total"]), offset=int(res["offset"])
     );
 }
 
@@ -140,7 +140,7 @@ def:pub search_professors(
 }
 
 def:pub get_filter_options(university: str = "", department: str = "") -> FilterOptions {
-    o = st.filter_options(university, department) as dict;
+    o = st.filter_options(university, department) as dict[str, any];
     return FilterOptions(
         universities=o["universities"], departments=o["departments"], subfields=o["subfields"], fields=o["fields"]
     );
@@ -151,11 +151,11 @@ def:pub get_professor_profile(professor_id: str) -> ProfessorDetail | None {
     if found is None {
         return None;
     }
-    p: dict = found as dict;
+    p: dict[str, any] = found as dict[str, any];
     inst_raw = st.get_institution(str(p.get("institution_id", "")));
-    inst: dict = (inst_raw as dict) if inst_raw is not None else {};
+    inst: dict[str, any] = (inst_raw as dict[str, any]) if inst_raw is not None else {};
     papers: list[PaperView] = [];
-    for x in (st.papers_by_ids(p.get("paper_ids") or []) as list[dict]) {
+    for x in (st.papers_by_ids(p.get("paper_ids") or []) as list[dict[str, any]]) {
         papers.append(PaperView(
             id=str(x.get("id", "")), title=str(x.get("title", "")), year=int(x.get("publication_year") or 0),
             publication_date=str(x.get("publication_date", "")), source_name=str(x.get("source_name", "")),
@@ -164,10 +164,10 @@ def:pub get_professor_profile(professor_id: str) -> ProfessorDetail | None {
         ));
     }
     papers.sort(key=lambda (v: PaperView) -> str { return v.publication_date; }, reverse=True);
-    roles: dict = {};
+    roles: dict[str, any] = {};
     for g in (p.get("grants") or []) { roles[str(g.get("id", ""))] = str(g.get("role", "")); }
     grants: list[GrantView] = [];
-    for g2 in (st.grants_by_ids(list(roles.keys())) as list[dict]) {
+    for g2 in (st.grants_by_ids(list(roles.keys())) as list[dict[str, any]]) {
         grants.append(GrantView(
             id=str(g2.get("id", "")), title=str(g2.get("title", "")), funder_name=str(g2.get("funder_name", "")),
             funder_award_id=str(g2.get("funder_award_id", "")), role=roles.get(str(g2.get("id", "")), ""),
@@ -188,7 +188,7 @@ def:pub get_professor_profile(professor_id: str) -> ProfessorDetail | None {
         )
         for a in (p.get("anchors") or [])
     ];
-    h: dict = p.get("hiring") or {};
+    h: dict[str, any] = p.get("hiring") or {};
     return ProfessorDetail(
         id=str(p["id"]), name=str(p.get("name", "")), title=str(p.get("title", "")),
         department=str(p.get("department", "")), university=str(p.get("university", "")),

@@ -44,7 +44,7 @@ def:pub signOut() -> None {
     _broadcast();
 }
 
-def:pub useAuth() -> dict {
+def:pub useAuth() -> dict[str, any] {
     has tick: int = 0;
     useEffect(
         lambda {

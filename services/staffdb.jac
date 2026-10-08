@@ -47,7 +47,7 @@ obj DbProfessorPage {
 
 def:protect staff_overview() -> DbOverview {
     require_staff();
-    o = st.overview() as dict;
+    o = st.overview() as dict[str, any];
     return DbOverview(
         institutions=int(o["institutions"]), professors=int(o["professors"]), matched=int(o["matched"]),
         unresolved=int(o["unresolved"]), pending=max(int(o["professors"]) - int(o["matched"]) - int(o["unresolved"]), 0),
@@ -64,7 +64,7 @@ def:protect staff_institutions() -> list[DbInstitution] {
             openalex_id=str(i.get("openalex_institution_id", "")), professors=int(i.get("n_professors") or 0),
             matched=int(i.get("n_matched") or 0), papers=int(i.get("n_papers") or 0), grants=int(i.get("n_grants") or 0)
         )
-        for i in (st.list_institutions({}, False) as list[dict])
+        for i in (st.list_institutions({}, False) as list[dict[str, any]])
     ];
     rows.sort(key=lambda (r: DbInstitution) -> str { return r.name; });
     return rows;
@@ -72,9 +72,9 @@ def:protect staff_institutions() -> list[DbInstitution] {
 
 def:protect staff_professors(query: str = "", match_status: str = "", offset: int = 0, limit: int = 50) -> DbProfessorPage {
     require_staff();
-    res = st.search(query, "", "", "", False, False, 0, 100000) as dict;
+    res = st.search(query, "", "", "", False, False, 0, 100000) as dict[str, any];
     rows: list[DbProfessor] = [];
-    for r in (res["items"] as list[dict]) {
+    for r in (res["items"] as list[dict[str, any]]) {
         if match_status and str(r.get("match_status", "")) != match_status { continue; }
         rows.append(DbProfessor(
             id=str(r["id"]), name=str(r.get("name", "")), title=str(r.get("title", "")),

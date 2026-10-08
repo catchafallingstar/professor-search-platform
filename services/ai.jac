@@ -63,7 +63,7 @@ def configured() -> bool {
 
 import services.ai_lock as ai_lock;
 
-glob _MODELS: dict = {},
+glob _MODELS: dict[str, any] = {},
      cur: any = None,
      _LOCK: threading.Lock = ai_lock.LOCK;
 
@@ -98,7 +98,7 @@ def local_name() -> str {
 
 # ---------- resting models (rate limit, out of credits, local model offline) ----------
 
-glob _REST: dict = {};    # model name -> [until_epoch, reason]
+glob _REST: dict[str, any] = {};    # model name -> [until_epoch, reason]
 
 # The rest list is mirrored to a small file: hot reloads and worker threads that re-import this
 # module would otherwise forget that OpenRouter hit its daily cap and call it again every job.
@@ -108,10 +108,10 @@ def _load_rest() -> None {
     try {
         import json;
         with open(REST_FILE) as f {
-            data: dict = json.load(f);
+            data: dict[str, any] = json.load(f);
             for k in data.keys() {
-                new_v: list = data[k];
-                old_v: list = _REST.get(k, [0, ""]);
+                new_v: list[any] = data[k];
+                old_v: list[any] = _REST.get(k, [0, ""]);
                 if k not in _REST or float(str(new_v[0])) > float(str(old_v[0])) { _REST[k] = new_v; }
             }
         }
@@ -125,7 +125,7 @@ def _save_rest() -> None {
     } except Exception { }
 }
 
-def _rest_seconds(err: str, kind: str, name: str = "") -> list {
+def _rest_seconds(err: str, kind: str, name: str = "") -> list[any] {
     # [seconds, reason] or [] when the failure is not about availability
     t = err.lower();
     if name.startswith("ollama") {
@@ -163,11 +163,11 @@ def _rest_seconds(err: str, kind: str, name: str = "") -> list {
     return [];
 }
 
-def resting() -> list[dict] {
+def resting() -> list[dict[str, any]] {
     now = time.time();
-    out: list[dict] = [];
+    out: list[dict[str, any]] = [];
     for m in list(_REST.keys()) {
-        v: list = _REST[m];
+        v: list[any] = _REST[m];
         until: float = float(v[0]);
         if until > now {
             out.append({"model": m, "seconds_left": int(until - now), "reason": v[1]});
@@ -192,7 +192,7 @@ def _model(name: str) -> Model {
     key_name = name;
     if name.startswith("ollama") { key_name = name + "@" + ollama_base(); }
     if key_name not in _MODELS {
-        cfg: dict = {};
+        cfg: dict[str, any] = {};
         key = "";
         if name.startswith("openrouter/") {
             key = os.environ.get("OPENROUTER_API_KEY", "");
@@ -200,7 +200,7 @@ def _model(name: str) -> Model {
             base = ollama_base();
             if base { cfg["base_url"] = base; }
         }
-        params: dict = {"temperature": 0.0, "max_tokens": 4000};
+        params: dict[str, any] = {"temperature": 0.0, "max_tokens": 4000};
         if name.startswith("ollama") {
             # a local model behind a quick tunnel: Cloudflare drops requests after ~100 s, so keep replies short
             params["max_tokens"] = int(os.environ.get("OLLAMA_MAX_TOKENS", "700") or 700);
@@ -239,7 +239,7 @@ def _kind(e: any) -> str {
     return "MODEL_ERROR";
 }
 
-def run_task(fn: any, args: list, check: any, escalate_uncertain: bool = False) -> AiOutcome {
+def run_task(fn: any, args: list[any], check: any, escalate_uncertain: bool = False) -> AiOutcome {
     # fn(*args) -> raw value from a f"by cur()" function; check(raw) -> [status, value] where
     # status is VALID_RESULT / VALID_EMPTY / UNCERTAIN / INVALID_OUTPUT.
     out = AiOutcome();
@@ -249,7 +249,7 @@ def run_task(fn: any, args: list, check: any, escalate_uncertain: bool = False) 
     attempt = 0;
     skipped = 0;
     for (i, name) in enumerate(models) {
-        rest: list = _REST.get(name, [0, ""]);
+        rest: list[any] = _REST.get(name, [0, ""]);
         if float(rest[0]) > time.time() {
             # resting (daily limit, no credits, local model offline): go straight to the next model
             skipped += 1;
@@ -347,7 +347,7 @@ sem _guess_dirs.university = "University name.";
 sem _guess_dirs.domain = "The university's official web domain, e.g. umich.edu.";
 sem _guess_dirs.fields = "Academic fields to prioritise.";
 
-def _check_guesses(raw: any) -> list {
+def _check_guesses(raw: any) -> list[any] {
     if not isinstance(raw, list) { return ["INVALID_OUTPUT", None]; }
     rows = [g for g in raw if isinstance(g, DirectoryGuess) and str(g.url).startswith("http")][:10];
     return ["VALID_RESULT" if rows else "VALID_EMPTY", rows];
@@ -368,7 +368,7 @@ def _classify_page(page_text: str, url: str) -> PageKind by cur(max_tokens=ai_ma
 sem _classify_page = "Classify this already-fetched university web page.";
 sem _classify_page.page_text = "Text of the page (links shown as [text](url)).";
 
-def _check_kind(raw: any) -> list {
+def _check_kind(raw: any) -> list[any] {
     if not isinstance(raw, PageKind) { return ["INVALID_OUTPUT", None]; }
     return ["UNCERTAIN" if raw == PageKind.UNCERTAIN else "VALID_RESULT", raw.name];
 }
@@ -399,7 +399,7 @@ sem _extract_faculty.department = "Department hint for the page.";
 
 def extract_faculty(page_text: str, department: str) -> AiOutcome {
     low = page_text.lower();
-    def check(raw: any) -> list {
+    def check(raw: any) -> list[any] {
         if not isinstance(raw, FacultyList) { return ["INVALID_OUTPUT", None]; }
         if raw.uncertain and len(raw.faculty) == 0 { return ["UNCERTAIN", []]; }
         # names must exist in the fetched text: the model cannot invent people
@@ -430,7 +430,7 @@ sem ProfileInfo.publications = "Up to 3 of the most recent publications listed o
 def _profile(page_text: str, professor_name: str) -> ProfileInfo by cur(max_tokens=ai_max_tokens());
 sem _profile = "Extract details from this already-fetched faculty profile page. Use only what appears in the text.";
 
-def _check_profile(raw: any) -> list {
+def _check_profile(raw: any) -> list[any] {
     if not isinstance(raw, ProfileInfo) { return ["INVALID_OUTPUT", None]; }
     return ["VALID_RESULT", raw];
 }
@@ -459,7 +459,7 @@ sem HiringFinding.confidence = "Your confidence from 0 to 1.";
 def _hiring(page_text: str, professor_name: str) -> HiringFinding by cur(max_tokens=ai_max_tokens());
 sem _hiring = "Decide whether this already-fetched page contains a hiring or recruitment statement by this professor or their lab, and copy the exact supporting sentence. Do not paraphrase. Do not return a URL.";
 
-def _check_hiring(raw: any) -> list {
+def _check_hiring(raw: any) -> list[any] {
     if not isinstance(raw, HiringFinding) { return ["INVALID_OUTPUT", None]; }
     if raw.status == HiringStatus.NO_SIGNAL { return ["VALID_EMPTY", raw]; }
     if not raw.quote.strip() { return ["INVALID_OUTPUT", None]; }    # claimed a signal but gave no quote
@@ -483,7 +483,7 @@ sem HiringVerdict.reason = "One short sentence explaining the decision.";
 def _verify_hiring(sentence: str, professor_name: str) -> HiringVerdict by cur(max_tokens=ai_max_tokens());
 sem _verify_hiring = "Strictly judge whether this one sentence, copied from a web page, is a real recruitment signal for the named professor's lab. A news item welcoming or announcing a new member (even a new postdoc or fellow) is NOT recruitment. When in doubt, answer false.";
 
-def _check_verdict(raw: any) -> list {
+def _check_verdict(raw: any) -> list[any] {
     if not isinstance(raw, HiringVerdict) { return ["INVALID_OUTPUT", None]; }
     return ["VALID_RESULT", raw];
 }
@@ -520,7 +520,7 @@ sem _publications.department = "The professor's department (their field).";
 sem _publications.title = "Academic title, e.g. Assistant Professor.";
 sem _publications.page_text = "Text of the professor's official faculty profile page, possibly empty.";
 
-def _check_publications(raw: any) -> list {
+def _check_publications(raw: any) -> list[any] {
     if not isinstance(raw, PublicationAnswer) { return ["INVALID_OUTPUT", None]; }
     rows = [p for p in raw.papers if p.title.strip() and p.confidence >= 0.8][:8];
     return ["VALID_RESULT" if rows else "VALID_EMPTY", rows];

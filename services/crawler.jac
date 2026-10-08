@@ -55,7 +55,7 @@ obj DirectoryGuess {
 glob MAX_TEXT: int = 14000;
 
 def fetch_page(url: str) -> PageData {
-    d = fx.fetch_page(url) as dict;
+    d = fx.fetch_page(url) as dict[str, any];
     return PageData(url=str(d["url"]), title=str(d["title"]), text=str(d["text"]), ok=bool(d["ok"]));
 }
 
@@ -86,7 +86,7 @@ def llm_ready() -> bool {
 }
 
 def _rules_faculty(page: PageData, department_hint: str) -> list[FacultyEntry] {
-    rows = fx.extract_faculty_rules({"ok": page.ok, "text": page.text}, department_hint) as list[dict];
+    rows = fx.extract_faculty_rules({"ok": page.ok, "text": page.text}, department_hint) as list[dict[str, any]];
     return [
         FacultyEntry(name=str(r["name"]), title=str(r["title"]), department=str(r["department"]), profile_url=str(r["profile_url"]))
         for r in rows

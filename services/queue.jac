@@ -77,7 +77,7 @@ obj KeyStatus {
         order: int = 0;
 }
 
-def _status(r: dict) -> InstitutionStatus {
+def _status(r: dict[str, any]) -> InstitutionStatus {
     return InstitutionStatus(
         id=str(r.get("id", "")), name=str(r.get("name", "")), city=str(r.get("city", "")),
         state=str(r.get("state", "")), openalex_institution_id=str(r.get("openalex_institution_id", "")),
@@ -94,7 +94,7 @@ def _status(r: dict) -> InstitutionStatus {
 }
 
 def _worker_state() -> WorkerState {
-    s = pipe.log_state() as dict;
+    s = pipe.log_state() as dict[str, any];
     return WorkerState(
         running=bool(pipe.running()), steps=int(s["steps"]), last_message=str(s["last"]),
         last_at=str(s["at"]), log=list(s["lines"])
@@ -119,12 +119,12 @@ def:protect load_priority_universities() -> list[InstitutionStatus] {
     require_staff();
     r = pipe.load_ipeds();
     pipe.log(f"Loaded {r[1]} research universities from IPEDS {r[0]} ({r[2]} new).");
-    return [_status(i) for i in (pipe.queue() as list[dict])];
+    return [_status(i) for i in (pipe.queue() as list[dict[str, any]])];
 }
 
 def:protect get_pipeline_status() -> list[InstitutionStatus] {
     require_staff();
-    return [_status(i) for i in (pipe.queue() as list[dict])];
+    return [_status(i) for i in (pipe.queue() as list[dict[str, any]])];
 }
 
 def:protect run_step_as_staff() -> StepResult {
@@ -178,7 +178,7 @@ obj QueueJob {
 def:protect list_staff_review(limit: int = 200) -> list[ReviewItem] {
     require_staff();
     out: list[ReviewItem] = [];
-    for d in (st.staff_review_items(limit) as list[dict]) {
+    for d in (st.staff_review_items(limit) as list[dict[str, any]]) {
         out.append(ReviewItem(
             id=str(d.get("id", "")), task_type=str(d.get("task_type", "")), reason=str(d.get("reason", "")),
             detail=str(d.get("last_error") or ""), university=str(d.get("university") or ""),
@@ -195,7 +195,7 @@ def:protect list_recent_jobs(limit: int = 10) -> list[QueueJob] {
     require_staff();
     return [QueueJob(id=str(j["id"]), kind=str(j["kind"]), status=str(j["status"]), professor=str(j["professor"]),
                      task=str(j["task"]), result=str(j["result"]), when=str(j["when"]))
-            for j in (pipe.recent_jobs(int(limit)) as list[dict])];
+            for j in (pipe.recent_jobs(int(limit)) as list[dict[str, any]])];
 }
 
 def:protect requeue_staff_review() -> StepResult {
@@ -225,7 +225,7 @@ def:protect reset_institution(institution_id: str) -> InstitutionStatus | None {
     require_staff();
     st.update_institution(institution_id, {"pipeline_state": "QUEUED", "pipeline_note": ""});
     r = st.get_institution(institution_id);
-    return _status(r as dict) if r is not None else None;
+    return _status(r as dict[str, any]) if r is not None else None;
 }
 
 def:protect retry_unreadable() -> StepResult {
@@ -236,14 +236,14 @@ def:protect retry_unreadable() -> StepResult {
 
 def:protect recount_all() -> StepResult {
     require_staff();
-    for i in (pipe.queue() as list[dict]) { st.recount(str(i["id"])); }
+    for i in (pipe.queue() as list[dict[str, any]]) { st.recount(str(i["id"])); }
     return StepResult(message="Counters refreshed.");
 }
 
 def:protect get_config_status() -> ConfigStatus {
     require_staff();
-    d = fx.config_status() as dict;
-    rl = fx.rate_limit_status() as dict;
+    d = fx.config_status() as dict[str, any];
+    rl = fx.rate_limit_status() as dict[str, any];
     return ConfigStatus(
         openalex_ok=bool(d["openalex_ok"]), openalex_mailto=bool(d["openalex_mailto"]),
         openalex_key=bool(d["openalex_key"]), llm_key=bool(d["llm_key"]),
@@ -271,7 +271,7 @@ def:protect run_maintenance_now() -> StepResult {
 def:protect get_database_upgrade_state() -> DatabaseUpgradeState {
     require_staff();
     import services.upgrade_runner as upgr;
-    d = upgr.state() as dict;
+    d = upgr.state() as dict[str, any];
     status = str(d.get("status") or "PENDING");
     done = bool(d.get("done"));
     ran_at = str(d.get("ran_at") or "");
@@ -297,11 +297,11 @@ def:protect run_database_upgrade() -> StepResult {
         return StepResult(ok=False, message="Pause auto-processing before running the database upgrade.");
     }
     import services.upgrade_runner as upgr;
-    before = upgr.state() as dict;
+    before = upgr.state() as dict[str, any];
     if bool(before.get("done")) {
         return StepResult(message="Database upgrade already completed" + (" at " + str(before.get("ran_at")) if before.get("ran_at") else "") + ".");
     }
-    after = upgr.start() as dict;
+    after = upgr.start() as dict[str, any];
     if str(after.get("status") or "") == "RUNNING" {
         pipe.log("Database upgrade started by staff in the background.");
         return StepResult(message="Database upgrade started. Keep this page open; status updates automatically.");
@@ -321,25 +321,25 @@ def:protect list_openalex_keys() -> list[KeyStatus] {
             cooldown_minutes=int(r["cooldown_minutes"]), uses=int(r["uses"]),
             last_error=str(r["last_error"]), order=int(r["order"])
         )
-        for r in (fx.key_rows() as list[dict])
+        for r in (fx.key_rows() as list[dict[str, any]])
     ];
 }
 
 def:protect remove_openalex_key(key_id: str) -> StepResult {
     require_staff();
-    r = fx.remove_key(key_id) as dict;
+    r = fx.remove_key(key_id) as dict[str, any];
     return StepResult(ok=bool(r["ok"]), message=str(r["message"]));
 }
 
 def:protect reset_openalex_key(key_id: str) -> StepResult {
     require_staff();
-    r = fx.reset_key(key_id) as dict;
+    r = fx.reset_key(key_id) as dict[str, any];
     return StepResult(ok=bool(r["ok"]), message=str(r["message"]));
 }
 
 def:protect add_openalex_key(key: str) -> StepResult {
     require_staff();
-    r = fx.add_key(key) as dict;
+    r = fx.add_key(key) as dict[str, any];
     return StepResult(ok=bool(r["ok"]), message=str(r["message"]));
 }
 
@@ -354,13 +354,13 @@ def:protect download_snapshot() -> str {
 def:protect upload_snapshot(content: str) -> StepResult {
     require_staff();
     import services.backup as bk;
-    r = bk.import_json(content) as dict;
+    r = bk.import_json(content) as dict[str, any];
     return StepResult(ok=bool(r["ok"]), message=str(r["message"]));
 }
 
 def:protect snapshot_info() -> StepResult {
     require_staff();
-    o = st.overview() as dict;
+    o = st.overview() as dict[str, any];
     return StepResult(message=f"Live in MongoDB: {o['institutions']} universities, {o['professors']} professors, {o['papers']} papers.");
 }
 

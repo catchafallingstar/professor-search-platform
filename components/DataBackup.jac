@@ -45,11 +45,10 @@ def:pub DataBackup() -> JsxElement {
             return;
         }
         if file_url {
-            URL.revokeObjectURL(file_url);
         }  # jac:ignore[E1032]
         blob: any = new(Blob, [body], {"type": "application/json"});  # jac:ignore[E1053]
         stamp: any = new(Date).toISOString();  # jac:ignore[E1053]
-        file_url = URL.createObjectURL(blob);  # jac:ignore[E1032]
+        file_url = str(globalThis.URL.createObjectURL(blob));  # jac:ignore[E1032]
         file_name = "professor-atlas-" + str(stamp)[:16].replace(":", "-") + ".json";
         message = f"Backup ready ({int(
             len(body) / 1024

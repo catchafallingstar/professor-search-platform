@@ -110,29 +110,23 @@ entry-point = "main"
 [apps.access]
 kind = "service"
 entry-point = "services.access"
-route = "/access"
 
 [apps.directory]
 kind = "service"
 entry-point = "services.directory"
-route = "/directory"
 
 [apps.history]
 kind = "service"
 entry-point = "services.history"
-route = "/history"
 
 [apps.pipeline]
 kind = "service"
 entry-point = "services.pipeline"
-route = "/pipeline"
 
 [apps.queue]
 kind = "service"
 entry-point = "services.queue"
-route = "/queue"
 
 [apps.staffdb]
 kind = "service"
 entry-point = "services.staffdb"
-route = "/staffdb"
