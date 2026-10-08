@@ -137,7 +137,7 @@ def stop_worker():
 
 
 def ensure_owner_account():
-    """Provision the owner through Jac's current PostgreSQL-backed UserManager.
+    """Provision the owner through Jac's configured identity backend.
 
     OWNER_PASSWORD is only used at account creation and is never logged.
     If the account already exists, do not reset or replace its credentials.

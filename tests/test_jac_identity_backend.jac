@@ -1,4 +1,4 @@
-"""Exercise the REAL Jac Postgres-backed UserManager in an ephemeral CI runner.
+"""Exercise Jac's real configured identity backend in an ephemeral CI runner.
 
 No live MongoDB credentials and no user data from production are needed.
 """

@@ -1,6 +1,7 @@
-"""Mirror login accounts into MongoDB so they survive sandbox resets.
+"""Legacy SQLite account mirror for ephemeral local Jac deployments.
 
-The server keeps accounts in .jac/data/users.db (SQLite). This copies the account rows
+Jac defaults to SQLite for login accounts unless its own MONGODB_URI backend is configured.
+This compatibility mirror copies the SQLite account rows, when the SQLite file exists,
 (email, hashed password, role) to MongoDB db "professor_atlas", collection "accounts",
 and on boot re-inserts any account that is missing locally. Passwords stay hashed.
 System accounts (admin / __guest__ / __system__) are never copied: the server makes them.

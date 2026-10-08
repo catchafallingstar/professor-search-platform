@@ -13,8 +13,9 @@ Collections (every document is plain JSON):
   settings      small key/value docs (staff list, pipeline flags)
 Links: professor.paper_ids, professor.grants [{id, role}], professor.hiring {...}.
 
-Login accounts are NOT here: they live in the server's own account table
-(.jac/data/users.db) and are mirrored to professor_atlas.accounts (accounts_mirror.py).
+Login accounts use Jac's separately configured identity storage (SQLite by default,
+or MongoDB with Jac's MONGODB_URI). For legacy SQLite setups only, accounts_mirror.py
+copies SQLite accounts to professor_atlas.accounts to help recover sandbox resets.
 """
 
 import os

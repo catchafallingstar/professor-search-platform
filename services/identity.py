@@ -1,7 +1,8 @@
 """Resolve a signed-in Jac root to its account identity.
 
-Jac 0.37+ stores accounts in its Postgres-backed UserManager, not
-the legacy .jac/data/users.db SQLite table.  Never trust a client-submitted
+Jac stores login accounts in its configured identity backend: SQLite by default,
+or MongoDB when the Jac MONGODB_URI setting is configured. This is separate
+from the application's DIRECTORY_MONGODB_URI for professor data.  Never trust a client-submitted
 email when evaluating OWNER/STAFF privileges.
 """
 

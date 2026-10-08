@@ -32,5 +32,5 @@ jobs:
         run: jac check
       - name: Test Jac owner and staff authorization logic
         run: jac run tests/test_staff_access.jac
-      - name: Test real Postgres-backed Jac account lookup
-        run: jac run tests/test_jac_postgres_identity.jac
+      - name: Test real Jac identity lookup (configured backend)
+        run: jac run tests/test_jac_identity_backend.jac

@@ -451,3 +451,21 @@ Future work could include:
 Road to Research was built with **Jac, JacHammer, OpenAlex, and AI-assisted research** for JacHacks A2Tech360.
 
 > **Our goal is to make the road from "I want to do research" to "I found a professor I want to work with" much shorter.**
+
+## Database storage and migration safety
+
+Professor Atlas stores its university, professor, paper, grant, and staff-grant records in
+MongoDB (`professor_atlas`), configured with `DIRECTORY_MONGODB_URI`.
+Jac manages login accounts separately: by default it uses local SQLite
+(`.jac/data/users.db`), or MongoDB if Jac's own `MONGODB_URI` is configured.
+Setting `DIRECTORY_MONGODB_URI` alone does **not** switch Jac authentication to MongoDB.
+
+`services/accounts_mirror.py` is a legacy backup/restore helper for SQLite account
+records when the local file exists. **Do not remove it or change the authentication
+backend until existing accounts are backed up and their migration is verified.**
+
+The Staff page's **One-time database upgrade** calls `services/cleanup.py:upgrade_safe()`.
+It can merge or delete invalid/duplicate professor and unreferenced paper records, clear
+stale identity evidence, and requeue every university for faculty-coverage crawling.
+**Take a MongoDB backup first**; the upgrade has no built-in dry run or rollback.
+Pushing a GitHub commit or restarting Jac does not itself run this upgrade.
