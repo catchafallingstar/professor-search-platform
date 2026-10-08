@@ -96,6 +96,11 @@ og_site_name = "Blank canvas"
 
 [scale]
 
+# Built-in /admin would otherwise bootstrap a default 'admin/changeme' account.
+# The application uses its own owner/staff console and server-side role checks.
+[scale.admin]
+enabled = false
+
 [jacpack]
 name = 'professor-search-platform__1'
 description = 'Jac IDE snapshot for professor-search-platform__1'
