@@ -28,7 +28,8 @@ async def:pub refreshSession(email: str = "") -> any {
     try {
         fetched = await whoami(email);
     } except Exception {
-        jacLogout();  # expired / invalid token -> signed out
+        # A transient cross-app RPC failure does not prove the login token is invalid.
+        # Keep the token so the user can retry without losing the signed-in session.
         fetched = None;
     }
     _me = fetched;
