@@ -9,3 +9,5 @@ data/openalex_keys.txt
 data/openalex_keystate.json
 data/.directory.*.tmp
 .env
+dist/
+*.jab
