@@ -10,8 +10,6 @@ so nobody can claim to be the owner or a staff member by sending an email string
 There is no "first account becomes staff" bootstrap any more.
 """
 
-import os;
-import secrets;
 import services.store as st;
 import services.identity as ident;
 
@@ -140,27 +138,4 @@ def:protect reset_staff_registry() -> AccessResult {
     require_owner();
     _set_staff([]);
     return AccessResult(message="All staff grants removed. Only the owner has staff access now.");
-}
-
-# ---- internal worker token (the background worker is not a logged-in user) ----
-
-glob WORKER_TOKEN_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".worker_token");
-
-def:protect worker_token() -> str {
-    existing: str = "";
-    if os.path.exists(WORKER_TOKEN_FILE) {
-        with open(WORKER_TOKEN_FILE) as fh {
-            existing = str(fh.read()).strip();
-        }
-    }
-    if existing { return existing; }
-    fresh: str = str(secrets.token_hex(24));
-    with open(WORKER_TOKEN_FILE, "w") as fh {
-        fh.write(fresh);
-    }
-    return fresh;
-}
-
-def:protect check_worker_token(token: str) -> bool {
-    return bool(token) and secrets.compare_digest(token.encode(), worker_token().encode());
 }
