@@ -4,7 +4,8 @@ to MongoDB (services/store.py), so nothing depends on the sandbox disk."""
 import services.store as st;
 import services.pipe as pipe;
 import services.fetchers as fx;
-import from services.access { require_staff, worker_token, check_worker_token }
+import from services.access { require_staff }
+import services.worker_auth as wa;
 import services.ai as ai;
 
 obj ConfigStatus {
@@ -367,14 +368,14 @@ def:protect snapshot_info() -> StepResult {
 # ---- internal (background tooling authenticates with the worker token) ----
 
 def:pub process_next_step(worker_token: str = "") -> StepResult {
-    if not check_worker_token(worker_token) {
+    if not wa.check_worker_token(worker_token) {
         return StepResult(ok=False, message="Forbidden");
     }
     return _safe_step();
 }
 
 def:pub internal_action(worker_token: str = "", action: str = "", arg: str = "") -> StepResult {
-    if not check_worker_token(worker_token) {
+    if not wa.check_worker_token(worker_token) {
         return StepResult(ok=False, message="Forbidden");
     }
     if action == "step" { return _safe_step(); }
@@ -398,6 +399,6 @@ def:pub internal_action(worker_token: str = "", action: str = "", arg: str = "")
 }
 
 with entry {
-    fx.set_worker_token(worker_token());
+    fx.set_worker_token(wa.worker_token());
     fx.restore_then_resume();
 }
