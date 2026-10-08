@@ -6,7 +6,7 @@ calls useAuth() re-renders when the session changes (sign in, sign out, refresh)
 
 import from react { useEffect }
 import from "@jac/runtime" { jacIsLoggedIn, jacLogout }
-sv import from ..services.access { whoami, WhoAmI }
+import from ..services.access { whoami, WhoAmI }
 
 glob _me: any = None,
      _ready: bool = False,
@@ -28,7 +28,7 @@ async def:pub refreshSession(email: str = "") -> any {
     try {
         fetched = await whoami(email);
     } except Exception {
-        jacLogout();   # expired / invalid token -> signed out
+        jacLogout();  # expired / invalid token -> signed out
         fetched = None;
     }
     _me = fetched;
@@ -46,17 +46,20 @@ def:pub signOut() -> None {
 
 def:pub useAuth() -> dict {
     has tick: int = 0;
-    useEffect(lambda {
-        handler = lambda (e: any) { tick = tick + 1; };
-        window.addEventListener("atlas-auth", handler);
-        if _ready {
-            # Session resolved before this component subscribed: re-render once to pick it up.
-            tick = tick + 1;
-        } elif not _loading {
-            _loading = True;
-            refreshSession("");
-        }
-        return lambda { window.removeEventListener("atlas-auth", handler); };
-    }, []);
+    useEffect(
+        lambda {
+            handler = lambda (e: any) { tick = tick + 1; };
+            window.addEventListener("atlas-auth", handler);
+            if _ready {
+                # Session resolved before this component subscribed: re-render once to pick it up.
+                tick = tick + 1;
+            } elif not _loading {
+                _loading = True;
+                refreshSession("");
+            }
+            return lambda { window.removeEventListener("atlas-auth", handler); };
+        },
+        []
+    );
     return {"me": _me, "ready": _ready, "tick": tick};
 }

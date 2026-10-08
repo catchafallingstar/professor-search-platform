@@ -2,8 +2,7 @@
 name = "empty"
 version = "0.0.1"
 description = "Empty Jac project - start from scratch"
-entry-point = "main"
-kind = "web-app"
+default-app = "empty"
 
 [byllm]
 [byllm.model]
@@ -103,3 +102,37 @@ description = 'Jac IDE snapshot for professor-search-platform__1'
 
 [jachammer]
 project_id = "prj_544d2f11b88b4d10b8f02ce77c883a60"
+
+[apps.empty]
+kind = "web-app"
+entry-point = "main"
+
+[apps.access]
+kind = "service"
+entry-point = "services.access"
+route = "/access"
+
+[apps.directory]
+kind = "service"
+entry-point = "services.directory"
+route = "/directory"
+
+[apps.history]
+kind = "service"
+entry-point = "services.history"
+route = "/history"
+
+[apps.pipeline]
+kind = "service"
+entry-point = "services.pipeline"
+route = "/pipeline"
+
+[apps.queue]
+kind = "service"
+entry-point = "services.queue"
+route = "/queue"
+
+[apps.staffdb]
+kind = "service"
+entry-point = "services.staffdb"
+route = "/staffdb"
