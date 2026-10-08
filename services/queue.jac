@@ -291,7 +291,7 @@ def:priv get_database_upgrade_state() -> DatabaseUpgradeState {
 }
 
 def:priv run_database_upgrade() -> StepResult {
-    """Start the one-time MongoDB repair in the background."""
+    # Start the one-time MongoDB repair in the background.
     require_staff();
     if pipe.running() {
         return StepResult(ok=False, message="Pause auto-processing before running the database upgrade.");
